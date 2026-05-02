@@ -434,14 +434,7 @@ function buildOpenApiSpec() {
 }
 
 export default async function swaggerPlugin(fastify, opts) {
-  fastify.get('/documentation/json', async () => buildOpenApiSpec());
-
-  fastify.get('/documentation/routes', async () => ({
-    success: true,
-    routes: fastify.printRoutes ? fastify.printRoutes() : 'routes info not available',
-  }));
-
-  fastify.get('/documentation', async (_request, reply) => {
+  const sendDocumentationHtml = async (_request, reply) => {
     const html = `<!doctype html>
 <html>
   <head>
@@ -455,11 +448,25 @@ export default async function swaggerPlugin(fastify, opts) {
   </head>
   <body>
     <h1>Artisan API Documentation</h1>
-    <p>OpenAPI JSON is available at <a href="/documentation/json">/documentation/json</a>.</p>
-    <p>Registered Fastify routes are available at <a href="/documentation/routes">/documentation/routes</a>.</p>
+    <p>OpenAPI JSON is available at <a href="/api/documentation/json">/api/documentation/json</a>.</p>
+    <p>Registered Fastify routes are available at <a href="/api/documentation/routes">/api/documentation/routes</a>.</p>
     <p>Import the JSON URL into Swagger Editor, Postman, Insomnia, or Stoplight to browse all endpoints.</p>
   </body>
 </html>`;
     reply.header('Content-Type', 'text/html; charset=utf-8').send(html);
+  };
+
+  const sendRouteTree = async () => ({
+    success: true,
+    routes: fastify.printRoutes ? fastify.printRoutes() : 'routes info not available',
   });
+
+  fastify.get('/documentation/json', async () => buildOpenApiSpec());
+  fastify.get('/api/documentation/json', async () => buildOpenApiSpec());
+
+  fastify.get('/documentation/routes', sendRouteTree);
+  fastify.get('/api/documentation/routes', sendRouteTree);
+
+  fastify.get('/documentation', sendDocumentationHtml);
+  fastify.get('/api/documentation', sendDocumentationHtml);
 }
