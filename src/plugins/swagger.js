@@ -1,5 +1,5 @@
-function jsonSchema(properties = {}, required = []) {
-  return { type: 'object', required, properties, additionalProperties: true };
+function jsonSchema(properties = {}, required = [], additionalProperties = false) {
+  return { type: 'object', required, properties, additionalProperties };
 }
 
 function successResponse(description = 'Successful response') {
@@ -54,13 +54,38 @@ function body(content) {
     required: true,
     content: {
       'application/json': {
-        schema: content || jsonSchema(),
+        schema: content || { $ref: '#/components/schemas/FlexibleJsonRequest' },
       },
     },
   };
 }
 
-function genericOperation({ tag, summary, auth = true, params = [], requestBody = null, responses = null }) {
+function refBody(schemaName, mediaType = 'application/json') {
+  return {
+    required: true,
+    content: {
+      [mediaType]: {
+        schema: { $ref: `#/components/schemas/${schemaName}` },
+      },
+    },
+  };
+}
+
+function jsonAndMultipartBody(schemaName, multipartSchemaName = schemaName) {
+  return {
+    required: true,
+    content: {
+      'application/json': { schema: { $ref: `#/components/schemas/${schemaName}` } },
+      'multipart/form-data': { schema: { $ref: `#/components/schemas/${multipartSchemaName}` } },
+    },
+  };
+}
+
+function multipartBody(schemaName) {
+  return refBody(schemaName, 'multipart/form-data');
+}
+
+function genericOperation({ tag, summary, description = null, auth = true, params = [], requestBody = null, responses = null, operationId = null }) {
   const op = {
     tags: [tag],
     summary,
@@ -74,6 +99,8 @@ function genericOperation({ tag, summary, auth = true, params = [], requestBody 
       500: errorResponse('Server error'),
     },
   };
+  if (description) op.description = description;
+  if (operationId) op.operationId = operationId;
   if (auth) op.security = authHeader();
   if (params.length) op.parameters = params;
   if (requestBody) op.requestBody = requestBody;
@@ -86,10 +113,17 @@ function add(paths, method, route, options) {
 }
 
 function addCrud(paths, base, tag, singular) {
+  const schemaBySingular = {
+    ad: 'AdRequest',
+    'announcement ad': 'AdRequest',
+    'job category': 'JobCategoryRequest',
+    'job subcategory': 'JobSubcategoryRequest',
+  };
+  const requestBody = schemaBySingular[singular] ? refBody(schemaBySingular[singular]) : body();
   add(paths, 'get', base, { tag, summary: `List ${tag.toLowerCase()}`, auth: false });
-  add(paths, 'post', base, { tag, summary: `Create ${singular}`, requestBody: body() });
+  add(paths, 'post', base, { tag, summary: `Create ${singular}`, requestBody });
   add(paths, 'get', `${base}/{id}`, { tag, summary: `Get ${singular}`, auth: false, params: [pathParam('id')] });
-  add(paths, 'put', `${base}/{id}`, { tag, summary: `Update ${singular}`, params: [pathParam('id')], requestBody: body() });
+  add(paths, 'put', `${base}/{id}`, { tag, summary: `Update ${singular}`, params: [pathParam('id')], requestBody });
   add(paths, 'delete', `${base}/{id}`, { tag, summary: `Delete ${singular}`, params: [pathParam('id')] });
 }
 
@@ -115,7 +149,7 @@ function addAuthRoutes(paths) {
       password: { type: 'string' },
     }, ['email', 'password'])),
   });
-  add(paths, 'post', '/api/auth/guest', { tag, auth: false, summary: 'Create or login as guest user', requestBody: body() });
+  add(paths, 'post', '/api/auth/guest', { tag, auth: false, summary: 'Create or login as guest user', requestBody: refBody('GuestLoginRequest') });
   add(paths, 'post', '/api/auth/oauth/google', {
     tag,
     auth: false,
@@ -141,7 +175,7 @@ function addAuthRoutes(paths) {
   add(paths, 'post', '/api/auth/verify-otp', { tag, auth: false, summary: 'Verify registration OTP', requestBody: body(jsonSchema({ email: { type: 'string', format: 'email' }, otp: { type: 'string' } }, ['email', 'otp'])) });
   add(paths, 'post', '/api/auth/resend-otp', { tag, auth: false, summary: 'Resend registration OTP', requestBody: body(jsonSchema({ email: { type: 'string', format: 'email' }, phone: { type: 'string' } }, ['email'])) });
   add(paths, 'post', '/api/auth/verify-sendchamp', { tag, auth: false, summary: 'Verify Sendchamp OTP/reference', requestBody: body(jsonSchema({ email: { type: 'string', format: 'email' }, reference: { type: 'string' }, otp: { type: 'string' } }, ['email', 'reference', 'otp'])) });
-  add(paths, 'post', '/api/auth/registeruserfirebase', { tag, auth: false, summary: 'Register user using Firebase phone verification', requestBody: body() });
+  add(paths, 'post', '/api/auth/registeruserfirebase', { tag, auth: false, summary: 'Register user using Firebase phone verification', requestBody: refBody('FirebaseRegisterRequest') });
   add(paths, 'post', '/api/auth/verify-remote', { tag, auth: false, summary: 'Verify remote token', requestBody: body(jsonSchema({ token: { type: 'string' } })) });
   add(paths, 'get', '/api/auth/verify', { tag, summary: 'Verify JWT and return decoded payload' });
 }
@@ -150,24 +184,101 @@ function addKycRoutes(paths) {
   const tag = 'KYC';
   add(paths, 'post', '/api/kyc/dojah/nin-selfie', {
     tag,
+    operationId: 'verifyDojahNinSelfie',
     summary: 'Verify Nigerian NIN with selfie through Dojah',
+    description: [
+      'Verifies the authenticated user with an 11-digit Nigerian NIN and a selfie image.',
+      'The selfie can be sent as base64 JSON or as multipart/form-data.',
+      'Accepted selfie field names are selfieImage, selfie_image, and selfie.',
+      'A successful match sets KYC to approved, marks the user as verified, and verifies the artisan profile when one exists.',
+      'If Dojah is temporarily unavailable, the KYC record moves to pending_review for manual admin handling.',
+      'Approval requires Dojah selfie match plus confidence greater than or equal to DOJAH_NIN_SELFIE_CONFIDENCE_THRESHOLD, default 90.',
+    ].join('\n\n'),
     requestBody: {
       required: true,
       content: {
-        'application/json': { schema: { $ref: '#/components/schemas/DojahNinSelfieJsonRequest' } },
-        'multipart/form-data': { schema: { $ref: '#/components/schemas/DojahNinSelfieMultipartRequest' } },
+        'application/json': {
+          schema: { $ref: '#/components/schemas/DojahNinSelfieJsonRequest' },
+          examples: {
+            base64Selfie: {
+              summary: 'Base64 selfie',
+              value: {
+                nin: '70123456789',
+                selfieImage: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ...',
+                firstName: 'John',
+                lastName: 'Doe',
+              },
+            },
+          },
+        },
+        'multipart/form-data': {
+          schema: { $ref: '#/components/schemas/DojahNinSelfieMultipartRequest' },
+        },
       },
     },
     responses: {
-      200: { description: 'Verification completed', content: { 'application/json': { schema: { $ref: '#/components/schemas/DojahNinSelfieResponse' } } } },
-      202: successResponse('Automatic verification moved to manual review'),
+      200: {
+        description: 'Verification completed. Status may be approved or rejected depending on Dojah selfie match and confidence threshold.',
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/DojahNinSelfieResponse' },
+            examples: {
+              approved: {
+                value: {
+                  success: true,
+                  message: 'NIN selfie verification approved',
+                  data: {
+                    status: 'approved',
+                    match: true,
+                    confidenceValue: 98.4,
+                    threshold: 90,
+                    user: { _id: '6624b1b15e0c8c2c64a00001', kycVerified: true, isVerified: true, kycLevel: 2 },
+                    artisan: { _id: '6624b1b15e0c8c2c64a00002', verified: true },
+                  },
+                },
+              },
+              rejected: {
+                value: {
+                  success: true,
+                  message: 'NIN selfie verification rejected',
+                  data: {
+                    status: 'rejected',
+                    match: false,
+                    confidenceValue: 41.2,
+                    threshold: 90,
+                    user: { _id: '6624b1b15e0c8c2c64a00001', kycVerified: false, isVerified: false, kycLevel: 1 },
+                    artisan: { _id: '6624b1b15e0c8c2c64a00002', verified: false },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      202: {
+        description: 'Automatic verification moved to manual review',
+        content: { 'application/json': { schema: { $ref: '#/components/schemas/DojahNinSelfieManualReviewResponse' } } },
+      },
       400: errorResponse('Invalid NIN or missing selfie'),
       401: errorResponse('Missing or invalid JWT'),
       500: errorResponse('Dojah configuration or server error'),
     },
   });
-  add(paths, 'post', '/api/kyc/submit', { tag, summary: 'Submit manual KYC fallback', requestBody: body() });
-  add(paths, 'get', '/api/kyc/status', { tag, summary: 'Get current user KYC status' });
+  add(paths, 'post', '/api/kyc/submit', {
+    tag,
+    summary: 'Submit manual KYC fallback',
+    description: 'Submits KYC details and optional document/selfie files for manual admin review.',
+    requestBody: multipartBody('ManualKycMultipartRequest'),
+  });
+  add(paths, 'get', '/api/kyc/status', {
+    tag,
+    summary: 'Get current user KYC status',
+    responses: {
+      200: { description: 'Current KYC status', content: { 'application/json': { schema: { $ref: '#/components/schemas/KycStatusResponse' } } } },
+      401: errorResponse('Unauthorized'),
+      500: errorResponse('Server error'),
+    },
+  });
   add(paths, 'delete', '/api/kyc/{id}/file', { tag, summary: 'Delete uploaded KYC file', params: [pathParam('id')] });
 }
 
@@ -176,33 +287,33 @@ function addApplicationRoutes(paths) {
   addCrud(paths, '/api/announcements/ads', 'Ads', 'announcement ad');
   for (const base of ['/api/ads', '/api/announcements/ads']) {
     add(paths, 'get', `${base}/marquee`, { tag: 'Ads', auth: false, summary: 'Get marquee ad' });
-    add(paths, 'post', `${base}/marquee`, { tag: 'Ads', summary: 'Create or update marquee ad', requestBody: body() });
+    add(paths, 'post', `${base}/marquee`, { tag: 'Ads', summary: 'Create or update marquee ad', requestBody: refBody('AdMarqueeRequest') });
     add(paths, 'get', `${base}/banner`, { tag: 'Ads', auth: false, summary: 'List banner ads' });
-    add(paths, 'post', `${base}/banner`, { tag: 'Ads', summary: 'Create banner ad', requestBody: body() });
+    add(paths, 'post', `${base}/banner`, { tag: 'Ads', summary: 'Create banner ad', requestBody: refBody('AdRequest') });
     add(paths, 'get', `${base}/carousel`, { tag: 'Ads', auth: false, summary: 'List carousel ads' });
-    add(paths, 'post', `${base}/carousel`, { tag: 'Ads', summary: 'Create carousel ad', requestBody: body() });
+    add(paths, 'post', `${base}/carousel`, { tag: 'Ads', summary: 'Create carousel ad', requestBody: refBody('AdRequest') });
   }
 
   add(paths, 'get', '/api/artisans', { tag: 'Artisans', auth: false, summary: 'List/discover artisans' });
   add(paths, 'get', '/api/artisans/search', { tag: 'Artisans', auth: false, summary: 'Search artisans' });
   add(paths, 'get', '/api/artisans/user/{id}', { tag: 'Artisans', auth: false, summary: 'Get artisan profile by user id', params: [pathParam('id')] });
-  add(paths, 'put', '/api/artisans/me', { tag: 'Artisans', summary: 'Update authenticated artisan profile', requestBody: body() });
-  add(paths, 'post', '/api/artisans', { tag: 'Artisans', summary: 'Create artisan profile', requestBody: body() });
+  add(paths, 'put', '/api/artisans/me', { tag: 'Artisans', summary: 'Update authenticated artisan profile', requestBody: jsonAndMultipartBody('ArtisanProfileRequest', 'ArtisanProfileMultipartRequest') });
+  add(paths, 'post', '/api/artisans', { tag: 'Artisans', summary: 'Create artisan profile', requestBody: jsonAndMultipartBody('ArtisanProfileRequest', 'ArtisanProfileMultipartRequest') });
   add(paths, 'get', '/api/artisans/{id}', { tag: 'Artisans', auth: false, summary: 'Get artisan profile', params: [pathParam('id')] });
-  add(paths, 'put', '/api/artisans/{id}', { tag: 'Artisans', summary: 'Update artisan profile', params: [pathParam('id')], requestBody: body() });
+  add(paths, 'put', '/api/artisans/{id}', { tag: 'Artisans', summary: 'Update artisan profile', params: [pathParam('id')], requestBody: jsonAndMultipartBody('ArtisanProfileRequest', 'ArtisanProfileMultipartRequest') });
   add(paths, 'patch', '/api/artisans/{id}/verify', { tag: 'Artisans', summary: 'Admin verify artisan', params: [pathParam('id')] });
   add(paths, 'patch', '/api/artisans/{id}/unverify', { tag: 'Artisans', summary: 'Admin unverify artisan', params: [pathParam('id')] });
 
   add(paths, 'get', '/api/artisan-services/artisan/{artisanId}', { tag: 'Artisan Services', auth: false, summary: 'List services for artisan', params: [pathParam('artisanId')] });
-  add(paths, 'post', '/api/artisan-services', { tag: 'Artisan Services', summary: 'Create or update artisan services/prices', requestBody: body() });
+  add(paths, 'post', '/api/artisan-services', { tag: 'Artisan Services', summary: 'Create or update artisan services/prices', requestBody: refBody('ArtisanServiceRequest') });
   add(paths, 'get', '/api/artisan-services/me', { tag: 'Artisan Services', summary: 'List my artisan services' });
   add(paths, 'get', '/api/artisan-services/{id}', { tag: 'Artisan Services', summary: 'Get artisan service', params: [pathParam('id')] });
-  add(paths, 'put', '/api/artisan-services/{id}', { tag: 'Artisan Services', summary: 'Update artisan service', params: [pathParam('id')], requestBody: body() });
+  add(paths, 'put', '/api/artisan-services/{id}', { tag: 'Artisan Services', summary: 'Update artisan service', params: [pathParam('id')], requestBody: refBody('ArtisanServiceRequest') });
   add(paths, 'delete', '/api/artisan-services/{id}', { tag: 'Artisan Services', summary: 'Delete artisan service', params: [pathParam('id')] });
 
   add(paths, 'get', '/api/chat/booking/{bookingId}', { tag: 'Chat', summary: 'Fetch chat thread by booking', params: [pathParam('bookingId')] });
   add(paths, 'get', '/api/chat/{threadId}', { tag: 'Chat', summary: 'Fetch chat thread', params: [pathParam('threadId')] });
-  add(paths, 'post', '/api/chat/{threadId}', { tag: 'Chat', summary: 'Send chat message', params: [pathParam('threadId')], requestBody: body() });
+  add(paths, 'post', '/api/chat/{threadId}', { tag: 'Chat', summary: 'Send chat message', params: [pathParam('threadId')], requestBody: refBody('ChatMessageRequest') });
 
   add(paths, 'get', '/api/locations/nigeria/states', { tag: 'Locations', auth: false, summary: 'List Nigerian states' });
   add(paths, 'get', '/api/locations/nigeria/lgas', { tag: 'Locations', auth: false, summary: 'List LGAs for a Nigerian state' });
@@ -212,81 +323,101 @@ function addApplicationRoutes(paths) {
 
   add(paths, 'get', '/api/jobs/mine', { tag: 'Jobs', summary: 'List authenticated customer jobs' });
   add(paths, 'get', '/api/jobs', { tag: 'Jobs', summary: 'List jobs' });
-  add(paths, 'post', '/api/jobs', { tag: 'Jobs', summary: 'Create job', requestBody: body() });
+  add(paths, 'post', '/api/jobs', { tag: 'Jobs', summary: 'Create job', requestBody: refBody('JobCreateRequest') });
   add(paths, 'get', '/api/jobs/{id}', { tag: 'Jobs', auth: false, summary: 'Get job', params: [pathParam('id')] });
-  add(paths, 'put', '/api/jobs/{id}', { tag: 'Jobs', summary: 'Update job', params: [pathParam('id')], requestBody: body() });
-  add(paths, 'patch', '/api/jobs/{id}', { tag: 'Jobs', summary: 'Patch job', params: [pathParam('id')], requestBody: body() });
+  add(paths, 'put', '/api/jobs/{id}', { tag: 'Jobs', summary: 'Update job', params: [pathParam('id')], requestBody: refBody('JobUpdateRequest') });
+  add(paths, 'patch', '/api/jobs/{id}', { tag: 'Jobs', summary: 'Patch job', params: [pathParam('id')], requestBody: refBody('JobUpdateRequest') });
   add(paths, 'delete', '/api/jobs/{id}', { tag: 'Jobs', summary: 'Close/delete job', params: [pathParam('id')] });
-  add(paths, 'post', '/api/jobs/{id}/apply', { tag: 'Jobs', summary: 'Apply to job as verified artisan', params: [pathParam('id')], requestBody: body() });
+  add(paths, 'post', '/api/jobs/{id}/apply', { tag: 'Jobs', summary: 'Apply to job as verified artisan', params: [pathParam('id')], requestBody: refBody('JobApplicationRequest') });
   add(paths, 'get', '/api/jobs/{id}/applications', { tag: 'Jobs', summary: 'List job applications', params: [pathParam('id')] });
-  add(paths, 'post', '/api/jobs/{id}/applications/{appId}/accept', { tag: 'Jobs', summary: 'Accept job application', params: [pathParam('id'), pathParam('appId')], requestBody: body() });
-  add(paths, 'patch', '/api/jobs/{id}/applications/{appId}', { tag: 'Jobs', summary: 'Update job application', params: [pathParam('id'), pathParam('appId')], requestBody: body() });
+  add(paths, 'post', '/api/jobs/{id}/applications/{appId}/accept', { tag: 'Jobs', summary: 'Accept job application', params: [pathParam('id'), pathParam('appId')], requestBody: refBody('PaymentModeRequest') });
+  add(paths, 'patch', '/api/jobs/{id}/applications/{appId}', { tag: 'Jobs', summary: 'Update job application', params: [pathParam('id'), pathParam('appId')], requestBody: refBody('JobApplicationUpdateRequest') });
   add(paths, 'post', '/api/jobs/{id}/applications/{appId}/withdraw', { tag: 'Jobs', summary: 'Withdraw job application', params: [pathParam('id'), pathParam('appId')] });
-  add(paths, 'post', '/api/jobs/{id}/attachments', { tag: 'Jobs', summary: 'Upload job attachment', params: [pathParam('id')] });
+  add(paths, 'post', '/api/jobs/{id}/attachments', {
+    tag: 'Jobs',
+    summary: 'Upload job attachment',
+    params: [pathParam('id')],
+    requestBody: {
+      required: true,
+      content: {
+        'multipart/form-data': {
+          schema: jsonSchema({ file: { type: 'string', format: 'binary' }, attachment: { type: 'string', format: 'binary' } }),
+        },
+      },
+    },
+  });
   add(paths, 'delete', '/api/jobs/{id}/attachments', { tag: 'Jobs', summary: 'Delete job attachment', params: [pathParam('id')] });
-  add(paths, 'post', '/api/jobs/{id}/quotes', { tag: 'Jobs', summary: 'Create job quote', params: [pathParam('id')], requestBody: body() });
+  add(paths, 'post', '/api/jobs/{id}/quotes', { tag: 'Jobs', summary: 'Create job quote', params: [pathParam('id')], requestBody: refBody('QuoteCreateRequest') });
   add(paths, 'get', '/api/jobs/{id}/quotes', { tag: 'Jobs', summary: 'List job quotes', params: [pathParam('id')] });
-  add(paths, 'post', '/api/jobs/{id}/quotes/{quoteId}/accept', { tag: 'Jobs', summary: 'Accept job quote', params: [pathParam('id'), pathParam('quoteId')], requestBody: body() });
+  add(paths, 'post', '/api/jobs/{id}/quotes/{quoteId}/accept', { tag: 'Jobs', summary: 'Accept job quote', params: [pathParam('id'), pathParam('quoteId')], requestBody: refBody('PaymentModeRequest') });
 }
 
 function addBookingAndPaymentRoutes(paths) {
   add(paths, 'get', '/api/bookings', { tag: 'Bookings', summary: 'List bookings' });
-  add(paths, 'post', '/api/bookings', { tag: 'Bookings', summary: 'Create booking', requestBody: body() });
+  add(paths, 'post', '/api/bookings', { tag: 'Bookings', summary: 'Create booking', requestBody: refBody('BookingCreateRequest') });
   add(paths, 'get', '/api/bookings/customer/{customerId}', { tag: 'Bookings', summary: 'List customer bookings', params: [pathParam('customerId')] });
   add(paths, 'get', '/api/bookings/artisan/{artisanId}', { tag: 'Bookings', summary: 'List artisan bookings', params: [pathParam('artisanId')] });
   add(paths, 'get', '/api/bookings/{id}', { tag: 'Bookings', summary: 'Get booking', params: [pathParam('id')] });
   add(paths, 'delete', '/api/bookings/{id}', { tag: 'Bookings', summary: 'Cancel booking', params: [pathParam('id')] });
-  add(paths, 'post', '/api/bookings/{id}/artisan-cancel', { tag: 'Bookings', summary: 'Cancel booking as verified artisan', params: [pathParam('id')], requestBody: body() });
+  add(paths, 'post', '/api/bookings/{id}/artisan-cancel', { tag: 'Bookings', summary: 'Cancel booking as verified artisan', params: [pathParam('id')], requestBody: refBody('CancelReasonRequest') });
   add(paths, 'get', '/api/bookings/{id}/refund', { tag: 'Bookings', summary: 'Get booking refund status', params: [pathParam('id')] });
-  add(paths, 'post', '/api/bookings/hire', { tag: 'Bookings', summary: 'Hire artisan and initialize payment when needed', requestBody: body() });
-  add(paths, 'post', '/api/bookings/{id}/pay-after-completion', { tag: 'Bookings', summary: 'Pay deferred booking after completion', params: [pathParam('id')], requestBody: body() });
+  add(paths, 'post', '/api/bookings/hire', { tag: 'Bookings', summary: 'Hire artisan and initialize payment when needed', requestBody: refBody('BookingHireRequest') });
+  add(paths, 'post', '/api/bookings/{id}/pay-after-completion', {
+    tag: 'Bookings',
+    summary: 'Pay deferred booking after completion',
+    params: [pathParam('id')],
+    requestBody: body(jsonSchema({
+      email: { type: 'string', format: 'email' },
+      customerCoords: { type: 'object', properties: { lat: { type: 'number' }, lon: { type: 'number' } } },
+    })),
+  });
   add(paths, 'post', '/api/bookings/{id}/complete', { tag: 'Bookings', summary: 'Complete booking', params: [pathParam('id')] });
   add(paths, 'post', '/api/bookings/{id}/accept', { tag: 'Bookings', summary: 'Accept booking as verified artisan', params: [pathParam('id')] });
-  add(paths, 'post', '/api/bookings/{id}/reject', { tag: 'Bookings', summary: 'Reject booking as verified artisan', params: [pathParam('id')], requestBody: body() });
-  add(paths, 'post', '/api/bookings/{id}/requirements', { tag: 'Bookings', summary: 'Post booking requirement', params: [pathParam('id')], requestBody: body() });
-  add(paths, 'post', '/api/bookings/{id}/quotes', { tag: 'Bookings', summary: 'Create booking quote as verified artisan', params: [pathParam('id')], requestBody: body() });
+  add(paths, 'post', '/api/bookings/{id}/reject', { tag: 'Bookings', summary: 'Reject booking as verified artisan', params: [pathParam('id')], requestBody: body(jsonSchema({ reason: { type: 'string' } })) });
+  add(paths, 'post', '/api/bookings/{id}/requirements', { tag: 'Bookings', summary: 'Post booking requirement', params: [pathParam('id')], requestBody: refBody('BookingRequirementRequest') });
+  add(paths, 'post', '/api/bookings/{id}/quotes', { tag: 'Bookings', summary: 'Create booking quote as verified artisan', params: [pathParam('id')], requestBody: refBody('QuoteCreateRequest') });
   add(paths, 'get', '/api/bookings/{id}/quotes', { tag: 'Bookings', summary: 'List booking quotes', params: [pathParam('id')] });
   add(paths, 'get', '/api/bookings/{id}/quotes/details', { tag: 'Bookings', summary: 'List detailed booking quotes', params: [pathParam('id')] });
-  add(paths, 'post', '/api/bookings/{id}/quotes/{quoteId}/accept', { tag: 'Bookings', summary: 'Accept booking quote', params: [pathParam('id'), pathParam('quoteId')], requestBody: body() });
-  add(paths, 'post', '/api/bookings/{id}/pay-with-quote', { tag: 'Bookings', summary: 'Pay booking with accepted quote', params: [pathParam('id')], requestBody: body() });
+  add(paths, 'post', '/api/bookings/{id}/quotes/{quoteId}/accept', { tag: 'Bookings', summary: 'Accept booking quote', params: [pathParam('id'), pathParam('quoteId')], requestBody: refBody('PaymentModeRequest') });
+  add(paths, 'post', '/api/bookings/{id}/pay-with-quote', { tag: 'Bookings', summary: 'Pay booking with accepted quote', params: [pathParam('id')], requestBody: refBody('EmailRequest') });
   add(paths, 'post', '/api/bookings/{id}/confirm-payment', { tag: 'Bookings', summary: 'Confirm booking payment', params: [pathParam('id')] });
 
-  add(paths, 'post', '/api/payments', { tag: 'Payments', summary: 'Create payment record', requestBody: body() });
-  add(paths, 'post', '/api/payments/verify', { tag: 'Payments', summary: 'Verify payment', requestBody: body() });
-  add(paths, 'post', '/api/payments/webhook', { tag: 'Payments', auth: false, summary: 'Paystack webhook endpoint', requestBody: body() });
+  add(paths, 'post', '/api/payments', { tag: 'Payments', summary: 'Create payment record', requestBody: refBody('PaymentCreateRequest') });
+  add(paths, 'post', '/api/payments/verify', { tag: 'Payments', summary: 'Verify payment', requestBody: refBody('PaymentVerifyRequest') });
+  add(paths, 'post', '/api/payments/webhook', { tag: 'Payments', auth: false, summary: 'Paystack webhook endpoint', requestBody: refBody('PaystackWebhookRequest') });
   add(paths, 'post', '/api/payments/reconcile/pending-quotes', { tag: 'Payments', summary: 'Admin reconcile pending quote transactions' });
-  add(paths, 'post', '/api/payments/initialize', { tag: 'Payments', summary: 'Initialize Paystack transaction', requestBody: body() });
+  add(paths, 'post', '/api/payments/initialize', { tag: 'Payments', summary: 'Initialize Paystack transaction', requestBody: refBody('PaymentInitializeRequest') });
   add(paths, 'get', '/api/payments/callback', { tag: 'Payments', auth: false, summary: 'Paystack callback endpoint' });
   add(paths, 'get', '/api/payments', { tag: 'Payments', summary: 'List payments' });
   add(paths, 'get', '/api/payments/banks', { tag: 'Payments', summary: 'List Paystack banks' });
   add(paths, 'get', '/api/payments/banks/resolve', { tag: 'Payments', summary: 'Resolve Paystack account' });
 
   add(paths, 'get', '/api/wallet', { tag: 'Wallet', summary: 'Get wallet' });
-  add(paths, 'post', '/api/wallet/credit', { tag: 'Wallet', summary: 'Credit wallet', requestBody: body() });
-  add(paths, 'post', '/api/wallet/debit', { tag: 'Wallet', summary: 'Debit wallet', requestBody: body() });
-  add(paths, 'post', '/api/wallet/payout-details', { tag: 'Wallet', summary: 'Set payout details', requestBody: body() });
+  add(paths, 'post', '/api/wallet/credit', { tag: 'Wallet', summary: 'Credit wallet', requestBody: refBody('WalletAmountRequest') });
+  add(paths, 'post', '/api/wallet/debit', { tag: 'Wallet', summary: 'Debit wallet', requestBody: refBody('WalletAmountRequest') });
+  add(paths, 'post', '/api/wallet/payout-details', { tag: 'Wallet', summary: 'Set payout details', requestBody: refBody('PayoutDetailsRequest') });
   add(paths, 'get', '/api/wallet/payout-details', { tag: 'Wallet', summary: 'Get payout details' });
 }
 
 function addCommsAndUserRoutes(paths) {
-  add(paths, 'post', '/api/devices/register', { tag: 'Devices', summary: 'Register device token', requestBody: body() });
-  add(paths, 'post', '/api/devices/unregister', { tag: 'Devices', summary: 'Unregister device token', requestBody: body() });
+  add(paths, 'post', '/api/devices/register', { tag: 'Devices', summary: 'Register device token', requestBody: refBody('DeviceTokenRequest') });
+  add(paths, 'post', '/api/devices/unregister', { tag: 'Devices', summary: 'Unregister device token', requestBody: refBody('DeviceTokenRequest') });
   add(paths, 'get', '/api/devices/my', { tag: 'Devices', summary: 'List my device tokens' });
 
   add(paths, 'get', '/api/notifications', { tag: 'Notifications', summary: 'List notifications' });
   add(paths, 'get', '/api/notifications/count', { tag: 'Notifications', summary: 'Get notifications count' });
-  add(paths, 'post', '/api/notifications/mark-read', { tag: 'Notifications', summary: 'Mark notifications read', requestBody: body() });
+  add(paths, 'post', '/api/notifications/mark-read', { tag: 'Notifications', summary: 'Mark notifications read', requestBody: refBody('NotificationMarkReadRequest') });
   add(paths, 'post', '/api/notifications/mark-all-read', { tag: 'Notifications', summary: 'Mark all notifications read' });
-  add(paths, 'post', '/api/notifications', { tag: 'Notifications', summary: 'Create notification', requestBody: body() });
+  add(paths, 'post', '/api/notifications', { tag: 'Notifications', summary: 'Create notification', requestBody: refBody('NotificationCreateRequest') });
   add(paths, 'get', '/api/notifications/{id}', { tag: 'Notifications', summary: 'Get notification', params: [pathParam('id')] });
   add(paths, 'delete', '/api/notifications/{id}', { tag: 'Notifications', summary: 'Delete notification', params: [pathParam('id')] });
 
   add(paths, 'get', '/api/reviews', { tag: 'Reviews', auth: false, summary: 'List reviews' });
-  add(paths, 'post', '/api/reviews', { tag: 'Reviews', summary: 'Create review', requestBody: body() });
+  add(paths, 'post', '/api/reviews', { tag: 'Reviews', summary: 'Create review', requestBody: refBody('ReviewCreateRequest') });
   add(paths, 'get', '/api/reviews/{id}', { tag: 'Reviews', auth: false, summary: 'Get review', params: [pathParam('id')] });
 
-  add(paths, 'post', '/api/support', { tag: 'Support', summary: 'Create support thread', requestBody: body() });
-  add(paths, 'post', '/api/support/{threadId}/messages', { tag: 'Support', summary: 'Post support message', params: [pathParam('threadId')], requestBody: body() });
+  add(paths, 'post', '/api/support', { tag: 'Support', summary: 'Create support thread', requestBody: refBody('SupportThreadRequest') });
+  add(paths, 'post', '/api/support/{threadId}/messages', { tag: 'Support', summary: 'Post support message', params: [pathParam('threadId')], requestBody: refBody('SupportMessageRequest') });
   add(paths, 'get', '/api/support/{threadId}', { tag: 'Support', summary: 'Get support thread', params: [pathParam('threadId')] });
   add(paths, 'get', '/api/support/mine', { tag: 'Support', summary: 'List my support threads' });
   add(paths, 'get', '/api/support', { tag: 'Support', summary: 'Admin list all support threads' });
@@ -294,9 +425,28 @@ function addCommsAndUserRoutes(paths) {
   add(paths, 'get', '/api/users/me', { tag: 'Users', summary: 'Get my profile' });
   add(paths, 'get', '/api/users/profile', { tag: 'Users', summary: 'Get my profile alias' });
   add(paths, 'delete', '/api/users/me', { tag: 'Users', summary: 'Delete my account' });
-  add(paths, 'put', '/api/users/me', { tag: 'Users', summary: 'Update my profile', requestBody: body() });
+  add(paths, 'put', '/api/users/me', {
+    tag: 'Users',
+    summary: 'Update my profile',
+    requestBody: {
+      required: true,
+      content: {
+        'multipart/form-data': {
+          schema: jsonSchema({
+            name: { type: 'string' },
+            phone: { type: 'string' },
+            address: { type: 'string' },
+            profileImage: { type: 'string', format: 'binary' },
+          }),
+        },
+        'application/json': {
+          schema: jsonSchema({ name: { type: 'string' }, phone: { type: 'string' }, address: { type: 'string' } }),
+        },
+      },
+    },
+  });
   add(paths, 'get', '/api/users', { tag: 'Users', auth: false, summary: 'List users' });
-  add(paths, 'post', '/api/users', { tag: 'Users', auth: false, summary: 'Create user', requestBody: body() });
+  add(paths, 'post', '/api/users', { tag: 'Users', auth: false, summary: 'Create user', requestBody: refBody('UserCreateRequest') });
   add(paths, 'delete', '/api/users/profile-image', { tag: 'Users', summary: 'Delete my profile image' });
   add(paths, 'get', '/api/users/{id}/full', { tag: 'Users', summary: 'Get full customer profile', params: [pathParam('id')] });
   add(paths, 'get', '/api/users/{id}', { tag: 'Users', auth: false, summary: 'Get user by id', params: [pathParam('id')] });
@@ -304,14 +454,24 @@ function addCommsAndUserRoutes(paths) {
 }
 
 function addSpecialAndAdminRoutes(paths) {
-  add(paths, 'post', '/api/special-service-requests', { tag: 'Special Service Requests', summary: 'Create special service request', requestBody: body() });
+  add(paths, 'post', '/api/special-service-requests', {
+    tag: 'Special Service Requests',
+    summary: 'Create special service request',
+    requestBody: {
+      required: true,
+      content: {
+        'multipart/form-data': { schema: { $ref: '#/components/schemas/SpecialServiceRequestMultipartRequest' } },
+        'application/json': { schema: { $ref: '#/components/schemas/SpecialServiceRequestCreateRequest' } },
+      },
+    },
+  });
   add(paths, 'get', '/api/special-service-requests', { tag: 'Special Service Requests', summary: 'List special service requests' });
   add(paths, 'get', '/api/special-service-requests/{id}', { tag: 'Special Service Requests', summary: 'Get special service request', params: [pathParam('id')] });
   add(paths, 'get', '/api/special-service-requests/{id}/response', { tag: 'Special Service Requests', summary: 'Get special service request response', params: [pathParam('id')] });
-  add(paths, 'put', '/api/special-service-requests/{id}', { tag: 'Special Service Requests', summary: 'Update special service request', params: [pathParam('id')], requestBody: body() });
-  add(paths, 'put', '/api/special-service-requests/{id}/response', { tag: 'Special Service Requests', summary: 'Respond to request as verified artisan', params: [pathParam('id')], requestBody: body() });
-  add(paths, 'post', '/api/special-service-requests/{id}/response', { tag: 'Special Service Requests', summary: 'Create/update artisan response', params: [pathParam('id')], requestBody: body() });
-  add(paths, 'post', '/api/special-service-requests/{id}/pay', { tag: 'Special Service Requests', summary: 'Pay for special service request', params: [pathParam('id')], requestBody: body() });
+  add(paths, 'put', '/api/special-service-requests/{id}', { tag: 'Special Service Requests', summary: 'Update special service request', params: [pathParam('id')], requestBody: refBody('SpecialServiceRequestUpdateRequest') });
+  add(paths, 'put', '/api/special-service-requests/{id}/response', { tag: 'Special Service Requests', summary: 'Respond to request as verified artisan', params: [pathParam('id')], requestBody: refBody('SpecialServiceResponseRequest') });
+  add(paths, 'post', '/api/special-service-requests/{id}/response', { tag: 'Special Service Requests', summary: 'Create/update artisan response', params: [pathParam('id')], requestBody: refBody('SpecialServiceResponseRequest') });
+  add(paths, 'post', '/api/special-service-requests/{id}/pay', { tag: 'Special Service Requests', summary: 'Pay for special service request', params: [pathParam('id')], requestBody: refBody('EmailRequest') });
 
   add(paths, 'get', '/api/transactions', { tag: 'Transactions', summary: 'List transactions' });
   add(paths, 'get', '/api/transactions/admin/summary', { tag: 'Transactions', summary: 'Admin transaction summary' });
@@ -334,24 +494,40 @@ function addSpecialAndAdminRoutes(paths) {
     ['configs', 'List configs'],
   ];
   for (const [route, summary] of adminGet) add(paths, 'get', `/api/admin/${route}`, { tag: 'Admin', summary });
-  add(paths, 'put', '/api/admin/artisans/{userId}', { tag: 'Admin', summary: 'Admin upsert artisan profile', params: [pathParam('userId')], requestBody: body() });
+  add(paths, 'put', '/api/admin/artisans/{userId}', {
+    tag: 'Admin',
+    summary: 'Admin upsert artisan profile',
+    params: [pathParam('userId')],
+    requestBody: {
+      required: true,
+      content: {
+        'multipart/form-data': {
+          schema: jsonSchema({ name: { type: 'string' }, bio: { type: 'string' }, profileImage: { type: 'string', format: 'binary' } }),
+        },
+        'application/json': { schema: jsonSchema({ name: { type: 'string' }, bio: { type: 'string' }, verified: { type: 'boolean' } }) },
+      },
+    },
+  });
   add(paths, 'delete', '/api/admin/artisans/{userId}/profile-image', { tag: 'Admin', summary: 'Admin delete artisan profile image', params: [pathParam('userId')] });
-  add(paths, 'put', '/api/admin/kyc/{userId}', { tag: 'Admin', summary: 'Admin upsert KYC', params: [pathParam('userId')], requestBody: body() });
+  add(paths, 'put', '/api/admin/kyc/{userId}', { tag: 'Admin', summary: 'Admin upsert KYC', params: [pathParam('userId')], requestBody: multipartBody('ManualKycMultipartRequest') });
   add(paths, 'get', '/api/admin/kyc/{userId}', { tag: 'Admin', summary: 'Admin get KYC by user', params: [pathParam('userId')] });
   add(paths, 'delete', '/api/admin/kyc/{userId}/file', { tag: 'Admin', summary: 'Admin delete KYC file', params: [pathParam('userId')] });
   add(paths, 'put', '/api/admin/users/{id}/ban', { tag: 'Admin', summary: 'Ban user', params: [pathParam('id')] });
   add(paths, 'put', '/api/admin/users/{id}/unban', { tag: 'Admin', summary: 'Unban user', params: [pathParam('id')] });
-  add(paths, 'put', '/api/admin/users/{id}/role', { tag: 'Admin', summary: 'Update user role', params: [pathParam('id')], requestBody: body() });
+  add(paths, 'put', '/api/admin/users/{id}/role', { tag: 'Admin', summary: 'Update user role', params: [pathParam('id')], requestBody: body(jsonSchema({ role: { type: 'string', enum: ['admin', 'artisan', 'customer', 'client'] } }, ['role'])) });
   add(paths, 'get', '/api/admin/chats/{id}', { tag: 'Admin', summary: 'Admin get chat', params: [pathParam('id')] });
   add(paths, 'get', '/api/admin/wallets/{userId}', { tag: 'Admin', summary: 'Admin get wallet by user', params: [pathParam('userId')] });
-  add(paths, 'post', '/api/admin/create', { tag: 'Admin', summary: 'Create admin account', requestBody: body() });
+  add(paths, 'post', '/api/admin/create', { tag: 'Admin', summary: 'Create admin account', requestBody: refBody('AdminCreateRequest') });
   add(paths, 'get', '/api/admin/configs/{key}', { tag: 'Admin', summary: 'Get config by key', params: [pathParam('key')] });
-  add(paths, 'put', '/api/admin/configs/{key}', { tag: 'Admin', summary: 'Upsert config by key', params: [pathParam('key')], requestBody: body() });
+  add(paths, 'put', '/api/admin/configs/{key}', { tag: 'Admin', summary: 'Upsert config by key', params: [pathParam('key')], requestBody: refBody('ConfigUpsertRequest') });
 
   add(paths, 'get', '/docs', { tag: 'Documentation', auth: false, summary: 'Markdown API docs' });
   add(paths, 'get', '/documentation', { tag: 'Documentation', auth: false, summary: 'Documentation landing page' });
   add(paths, 'get', '/documentation/json', { tag: 'Documentation', auth: false, summary: 'OpenAPI JSON' });
   add(paths, 'get', '/documentation/routes', { tag: 'Documentation', auth: false, summary: 'Fastify route tree' });
+  add(paths, 'get', '/api/documentation', { tag: 'Documentation', auth: false, summary: 'Swagger UI documentation' });
+  add(paths, 'get', '/api/documentation/json', { tag: 'Documentation', auth: false, summary: 'OpenAPI JSON' });
+  add(paths, 'get', '/api/documentation/routes', { tag: 'Documentation', auth: false, summary: 'Fastify route tree' });
 }
 
 function buildPaths() {
@@ -387,26 +563,140 @@ function buildOpenApiSpec() {
         bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
       },
       schemas: {
+        GenericSuccessResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: true },
+            message: { type: 'string' },
+            data: { type: 'object', additionalProperties: true },
+          },
+          additionalProperties: true,
+        },
+        GenericErrorResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: false },
+            message: { type: 'string' },
+            code: { type: 'string' },
+            data: { type: 'object', additionalProperties: true },
+          },
+          additionalProperties: true,
+        },
+        FlexibleJsonRequest: {
+          type: 'object',
+          description: 'Endpoint accepts a flexible JSON object. Check the endpoint summary for the expected workflow-specific fields.',
+          additionalProperties: {
+            oneOf: [
+              { type: 'string' },
+              { type: 'number' },
+              { type: 'boolean' },
+              { type: 'array', items: {} },
+              { type: 'object' },
+            ],
+          },
+          example: {
+            note: 'Use workflow-specific fields for this endpoint.',
+          },
+        },
+        GuestLoginRequest: {
+          type: 'object',
+          description: 'Optional client-generated guest metadata. Empty body is allowed.',
+          properties: {
+            deviceId: { type: 'string', example: 'device-abc-123' },
+            platform: { type: 'string', enum: ['ios', 'android', 'web'] },
+          },
+          additionalProperties: false,
+        },
+        FirebaseRegisterRequest: {
+          type: 'object',
+          properties: {
+            firebaseToken: { type: 'string', description: 'Firebase ID token from phone authentication.' },
+            idToken: { type: 'string', description: 'Alias for firebaseToken.' },
+            phone: { type: 'string', example: '+2348012345678' },
+            name: { type: 'string' },
+            email: { type: 'string', format: 'email' },
+            role: { type: 'string', enum: ['customer', 'client', 'artisan'] },
+          },
+          additionalProperties: false,
+        },
+        AdRequest: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', example: 'Weekend artisan discount' },
+            message: { type: 'string' },
+            imageUrl: { type: 'string', format: 'uri' },
+            linkUrl: { type: 'string', format: 'uri' },
+            placement: { type: 'string', example: 'banner' },
+            startDate: { type: 'string', format: 'date-time' },
+            endDate: { type: 'string', format: 'date-time' },
+            isActive: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+        AdMarqueeRequest: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', example: 'Book verified artisans near you today' },
+            linkUrl: { type: 'string', format: 'uri' },
+            isActive: { type: 'boolean', example: true },
+          },
+          additionalProperties: false,
+        },
+        JobCategoryRequest: {
+          type: 'object',
+          required: ['name'],
+          properties: {
+            name: { type: 'string', example: 'Plumbing' },
+            description: { type: 'string' },
+            icon: { type: 'string' },
+            imageUrl: { type: 'string', format: 'uri' },
+            isActive: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+        JobSubcategoryRequest: {
+          type: 'object',
+          required: ['name'],
+          properties: {
+            name: { type: 'string', example: 'Pipe repair' },
+            categoryId: { type: 'string', example: '6624b1b15e0c8c2c64a00001' },
+            description: { type: 'string' },
+            icon: { type: 'string' },
+            isActive: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
         DojahNinSelfieJsonRequest: {
           type: 'object',
           required: ['nin', 'selfieImage'],
           properties: {
             nin: { type: 'string', pattern: '^\\d{11}$', example: '70123456789', description: '11-digit Nigerian NIN.' },
-            selfieImage: { type: 'string', format: 'byte', description: 'Base64 selfie image. Data URL prefix is accepted and stripped.' },
+            idNumber: { type: 'string', pattern: '^\\d{11}$', example: '70123456789', description: 'Alias for nin.' },
+            selfieImage: { type: 'string', format: 'byte', description: 'Base64 selfie image. A data URL prefix such as data:image/jpeg;base64, is accepted and stripped.' },
+            selfie_image: { type: 'string', format: 'byte', description: 'Alias for selfieImage.' },
+            selfie: { type: 'string', format: 'byte', description: 'Alias for selfieImage.' },
             firstName: { type: 'string', example: 'John' },
+            first_name: { type: 'string', example: 'John', description: 'Alias for firstName.' },
             lastName: { type: 'string', example: 'Doe' },
+            last_name: { type: 'string', example: 'Doe', description: 'Alias for lastName.' },
           },
           additionalProperties: true,
         },
         DojahNinSelfieMultipartRequest: {
           type: 'object',
-          required: ['nin', 'selfie'],
+          required: ['nin'],
           properties: {
             nin: { type: 'string', pattern: '^\\d{11}$', example: '70123456789' },
-            selfie: { type: 'string', format: 'binary', description: 'Selfie image file. Field may also be named selfieImage or selfie_image.' },
+            idNumber: { type: 'string', pattern: '^\\d{11}$', example: '70123456789', description: 'Alias for nin.' },
+            selfie: { type: 'string', format: 'binary', description: 'Selfie image file.' },
+            selfieImage: { type: 'string', format: 'binary', description: 'Alias file field for selfie.' },
+            selfie_image: { type: 'string', format: 'binary', description: 'Alias file field for selfie.' },
             firstName: { type: 'string' },
+            first_name: { type: 'string' },
             lastName: { type: 'string' },
+            last_name: { type: 'string' },
           },
+          description: 'Provide one selfie file field named selfie, selfieImage, or selfie_image.',
         },
         DojahNinSelfieResponse: {
           type: 'object',
@@ -426,6 +716,497 @@ function buildOpenApiSpec() {
               additionalProperties: true,
             },
           },
+        },
+        DojahNinSelfieManualReviewResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: true },
+            message: { type: 'string', example: 'Automatic verification could not be completed. KYC moved to manual review.' },
+            data: {
+              type: 'object',
+              properties: {
+                status: { type: 'string', example: 'pending_review' },
+                failureReason: { type: 'string' },
+              },
+              additionalProperties: true,
+            },
+          },
+        },
+        KycStatusResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: true },
+            message: { type: 'string' },
+            data: {
+              type: 'object',
+              properties: {
+                status: { type: 'string', enum: ['pending', 'pending_review', 'approved', 'rejected'] },
+                provider: { type: 'string', enum: ['manual', 'dojah'] },
+                verificationType: { type: 'string', example: 'nin_selfie' },
+                failureReason: { type: 'string', nullable: true },
+                selfieVerification: {
+                  type: 'object',
+                  properties: {
+                    match: { type: 'boolean' },
+                    confidenceValue: { type: 'number' },
+                    threshold: { type: 'number' },
+                  },
+                },
+              },
+              additionalProperties: true,
+            },
+          },
+        },
+        ManualKycMultipartRequest: {
+          type: 'object',
+          properties: {
+            IdType: { type: 'string', example: 'NIN' },
+            idNumber: { type: 'string', example: '70123456789' },
+            front: { type: 'string', format: 'binary' },
+            back: { type: 'string', format: 'binary' },
+            selfie: { type: 'string', format: 'binary' },
+            document: { type: 'string', format: 'binary' },
+          },
+          additionalProperties: true,
+        },
+        ArtisanProfileRequest: {
+          type: 'object',
+          required: ['trade', 'experience'],
+          properties: {
+            userId: { type: 'string', description: 'Optional user id when admins create/update another artisan.' },
+            trade: { type: 'array', items: { type: 'string' }, example: ['plumbing', 'pipe repair'] },
+            experience: { type: 'number', example: 5 },
+            certifications: { type: 'array', items: { type: 'string' } },
+            bio: { type: 'string' },
+            portfolio: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  title: { type: 'string' },
+                  description: { type: 'string' },
+                  images: { type: 'array', items: { type: 'string', format: 'uri' } },
+                  beforeAfter: { type: 'boolean' },
+                },
+              },
+            },
+            serviceArea: {
+              type: 'object',
+              properties: {
+                address: { type: 'string' },
+                coordinates: { type: 'array', items: { type: 'number' }, example: [3.3792, 6.5244] },
+                radius: { type: 'number', example: 15 },
+              },
+            },
+            pricing: {
+              type: 'object',
+              properties: {
+                perHour: { type: 'number' },
+                perJob: { type: 'number' },
+              },
+            },
+            availability: { type: 'array', items: { type: 'string' }, example: ['Mon-Fri', 'Weekends'] },
+          },
+          additionalProperties: false,
+        },
+        ArtisanProfileMultipartRequest: {
+          allOf: [
+            { $ref: '#/components/schemas/ArtisanProfileRequest' },
+            {
+              type: 'object',
+              properties: {
+                profileImage: { type: 'string', format: 'binary' },
+                portfolioImages: { type: 'array', items: { type: 'string', format: 'binary' } },
+              },
+            },
+          ],
+        },
+        ChatMessageRequest: {
+          type: 'object',
+          required: ['message'],
+          properties: {
+            message: { type: 'string', example: 'Hello, are you available tomorrow?' },
+            attachments: { type: 'array', items: { type: 'string', format: 'uri' } },
+          },
+          additionalProperties: false,
+        },
+        JobCreateRequest: {
+          type: 'object',
+          required: ['title'],
+          properties: {
+            title: { type: 'string', example: 'Fix leaking kitchen sink' },
+            categoryId: { type: 'string' },
+            description: { type: 'string' },
+            trade: { type: 'array', items: { type: 'string' }, example: ['plumbing'] },
+            location: { type: 'string', example: 'Lekki Phase 1, Lagos' },
+            coordinates: { type: 'array', items: { type: 'number' }, example: [3.4723, 6.4474] },
+            budget: { type: 'number', example: 30000 },
+            schedule: { type: 'string', example: '2026-05-06T09:00:00.000Z' },
+            experienceLevel: { type: 'string', enum: ['entry', 'mid', 'senior'] },
+          },
+          additionalProperties: false,
+        },
+        JobUpdateRequest: {
+          allOf: [{ $ref: '#/components/schemas/JobCreateRequest' }],
+          description: 'Same fields as job creation, all optional for updates.',
+        },
+        JobApplicationRequest: {
+          type: 'object',
+          properties: {
+            coverNote: { type: 'string' },
+            proposedPrice: { type: 'number', example: 25000 },
+          },
+          additionalProperties: false,
+        },
+        JobApplicationUpdateRequest: {
+          type: 'object',
+          properties: {
+            coverNote: { type: 'string' },
+            proposedPrice: { type: 'number' },
+            status: { type: 'string', enum: ['pending', 'withdrawn'] },
+          },
+          additionalProperties: false,
+        },
+        PaymentModeRequest: {
+          type: 'object',
+          properties: {
+            paymentMode: { type: 'string', enum: ['upfront', 'afterCompletion'], example: 'upfront' },
+          },
+          additionalProperties: false,
+        },
+        CancelReasonRequest: {
+          type: 'object',
+          required: ['reason'],
+          properties: {
+            reason: { type: 'string', example: 'Schedule conflict' },
+          },
+          additionalProperties: false,
+        },
+        BookingRequirementRequest: {
+          type: 'object',
+          properties: {
+            note: { type: 'string', example: 'Please bring replacement fittings.' },
+            requirements: { type: 'array', items: { type: 'string' } },
+          },
+          additionalProperties: false,
+        },
+        PaymentCreateRequest: {
+          type: 'object',
+          required: ['amount', 'currency'],
+          properties: {
+            amount: { type: 'number', minimum: 0, example: 15000 },
+            currency: { type: 'string', example: 'NGN' },
+            method: { type: 'string', example: 'paystack' },
+            metadata: { type: 'object', additionalProperties: true },
+          },
+        },
+        PaymentVerifyRequest: {
+          type: 'object',
+          required: ['reference'],
+          properties: {
+            reference: { type: 'string', example: 'trx_123456789' },
+            status: { type: 'string', example: 'success' },
+          },
+        },
+        PaymentInitializeRequest: {
+          type: 'object',
+          properties: {
+            amount: { type: 'number', example: 25000 },
+            email: { type: 'string', format: 'email' },
+            bookingId: { type: 'string' },
+            jobId: { type: 'string' },
+            specialRequestId: { type: 'string' },
+            metadata: { type: 'object', additionalProperties: true },
+          },
+          additionalProperties: false,
+        },
+        PaystackWebhookRequest: {
+          type: 'object',
+          required: ['event', 'data'],
+          properties: {
+            event: { type: 'string', example: 'charge.success' },
+            data: { type: 'object', additionalProperties: true },
+          },
+          additionalProperties: true,
+        },
+        WalletAmountRequest: {
+          type: 'object',
+          required: ['amount'],
+          properties: {
+            amount: { type: 'number', minimum: 0, example: 5000 },
+            reason: { type: 'string' },
+            reference: { type: 'string' },
+          },
+          additionalProperties: true,
+        },
+        DeviceTokenRequest: {
+          type: 'object',
+          required: ['token'],
+          properties: {
+            token: { type: 'string' },
+            platform: { type: 'string', enum: ['ios', 'android', 'web'] },
+          },
+          additionalProperties: true,
+        },
+        PayoutDetailsRequest: {
+          type: 'object',
+          properties: {
+            bankCode: { type: 'string', example: '058' },
+            bankName: { type: 'string', example: 'Guaranty Trust Bank' },
+            accountNumber: { type: 'string', example: '0123456789' },
+            accountName: { type: 'string', example: 'John Doe' },
+          },
+          additionalProperties: false,
+        },
+        NotificationMarkReadRequest: {
+          type: 'object',
+          properties: {
+            ids: { type: 'array', items: { type: 'string' } },
+            id: { type: 'string' },
+          },
+          additionalProperties: true,
+        },
+        NotificationCreateRequest: {
+          type: 'object',
+          required: ['userId', 'title', 'body'],
+          properties: {
+            userId: { type: 'string' },
+            type: { type: 'string', example: 'booking' },
+            title: { type: 'string' },
+            body: { type: 'string' },
+            data: { type: 'object', additionalProperties: true },
+          },
+          additionalProperties: false,
+        },
+        ReviewCreateRequest: {
+          type: 'object',
+          required: ['rating'],
+          properties: {
+            artisanId: { type: 'string' },
+            bookingId: { type: 'string' },
+            jobId: { type: 'string' },
+            rating: { type: 'number', minimum: 1, maximum: 5, example: 5 },
+            comment: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+        SupportThreadRequest: {
+          type: 'object',
+          required: ['subject', 'message'],
+          properties: {
+            subject: { type: 'string', example: 'Payment issue' },
+            message: { type: 'string' },
+            category: { type: 'string' },
+            priority: { type: 'string', enum: ['low', 'normal', 'high', 'urgent'] },
+          },
+          additionalProperties: false,
+        },
+        SupportMessageRequest: {
+          type: 'object',
+          required: ['message'],
+          properties: {
+            message: { type: 'string' },
+            attachments: { type: 'array', items: { type: 'string', format: 'uri' } },
+          },
+          additionalProperties: false,
+        },
+        UserCreateRequest: {
+          type: 'object',
+          required: ['email'],
+          properties: {
+            name: { type: 'string' },
+            email: { type: 'string', format: 'email' },
+            password: { type: 'string', minLength: 6 },
+            phone: { type: 'string' },
+            role: { type: 'string', enum: ['customer', 'client', 'artisan', 'admin'] },
+          },
+          additionalProperties: false,
+        },
+        BookingCreateRequest: {
+          type: 'object',
+          required: ['artisanId', 'schedule'],
+          properties: {
+            artisanId: { type: 'string', example: '6624b1b15e0c8c2c64a00001' },
+            schedule: { type: 'string', example: '2026-05-05T10:00:00.000Z' },
+            price: { type: 'number', example: 25000 },
+            notes: { type: 'string' },
+            services: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['subCategoryId'],
+                properties: {
+                  subCategoryId: { type: 'string' },
+                  quantity: { type: 'integer', minimum: 1, example: 1 },
+                },
+              },
+            },
+            categoryId: { type: 'string' },
+            subCategoryId: { type: 'string' },
+            artisanServiceId: { type: 'string' },
+            paymentMode: { type: 'string', enum: ['upfront', 'afterCompletion'] },
+          },
+          additionalProperties: true,
+        },
+        BookingHireRequest: {
+          allOf: [
+            { $ref: '#/components/schemas/BookingCreateRequest' },
+            {
+              type: 'object',
+              required: ['email'],
+              properties: {
+                email: { type: 'string', format: 'email' },
+                customerCoords: {
+                  type: 'object',
+                  properties: { lat: { type: 'number' }, lon: { type: 'number' } },
+                },
+              },
+            },
+          ],
+        },
+        QuoteCreateRequest: {
+          type: 'object',
+          required: ['items'],
+          properties: {
+            items: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['name', 'cost'],
+                properties: {
+                  name: { type: 'string' },
+                  qty: { type: 'integer', minimum: 1 },
+                  note: { type: 'string' },
+                  cost: { type: 'number', minimum: 0 },
+                },
+              },
+            },
+            serviceCharge: { type: 'number', minimum: 0 },
+            notes: { type: 'string' },
+          },
+        },
+        EmailRequest: {
+          type: 'object',
+          properties: {
+            email: { type: 'string', format: 'email', example: 'customer@example.com' },
+          },
+          additionalProperties: false,
+        },
+        ArtisanServiceRequest: {
+          type: 'object',
+          properties: {
+            services: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  categoryId: { type: 'string' },
+                  subCategoryId: { type: 'string' },
+                  price: { type: 'number' },
+                  description: { type: 'string' },
+                },
+              },
+            },
+          },
+          additionalProperties: true,
+        },
+        SpecialServiceRequestCreateRequest: {
+          type: 'object',
+          required: ['artisanId', 'description'],
+          properties: {
+            artisanId: { type: 'string' },
+            description: { type: 'string' },
+            title: { type: 'string' },
+            location: { type: 'string' },
+            date: { type: 'string', format: 'date-time' },
+            time: { type: 'string' },
+            urgency: { type: 'string', enum: ['Normal', 'High', 'Low'] },
+            budget: { oneOf: [{ type: 'number' }, { type: 'string' }] },
+            categoryId: { type: 'string' },
+            categoryName: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+        SpecialServiceRequestMultipartRequest: {
+          allOf: [
+            { $ref: '#/components/schemas/SpecialServiceRequestCreateRequest' },
+            {
+              type: 'object',
+              properties: {
+                file: { type: 'string', format: 'binary' },
+                image: { type: 'string', format: 'binary' },
+                attachments: { type: 'array', items: { type: 'string', format: 'binary' } },
+              },
+            },
+          ],
+        },
+        SpecialServiceRequestUpdateRequest: {
+          type: 'object',
+          properties: {
+            status: { type: 'string', enum: ['pending', 'responded', 'accepted', 'in_progress', 'completed', 'cancelled', 'rejected', 'declined'] },
+            paymentMode: { type: 'string', enum: ['upfront', 'afterCompletion'] },
+            note: {
+              oneOf: [
+                { type: 'string' },
+                {
+                  type: 'object',
+                  properties: {
+                    quote: { oneOf: [{ type: 'number' }, { type: 'string' }] },
+                    min: { oneOf: [{ type: 'number' }, { type: 'string' }] },
+                    max: { oneOf: [{ type: 'number' }, { type: 'string' }] },
+                    message: { type: 'string' },
+                  },
+                  additionalProperties: true,
+                },
+              ],
+            },
+            selectedPrice: { oneOf: [{ type: 'number' }, { type: 'string' }] },
+            title: { type: 'string' },
+            description: { type: 'string' },
+            location: { type: 'string' },
+            date: { type: 'string', format: 'date-time' },
+            time: { type: 'string' },
+            urgency: { type: 'string', enum: ['Normal', 'High', 'Low'] },
+            budget: { oneOf: [{ type: 'number' }, { type: 'string' }] },
+          },
+          additionalProperties: false,
+        },
+        SpecialServiceResponseRequest: {
+          type: 'object',
+          properties: {
+            note: { $ref: '#/components/schemas/SpecialServiceRequestUpdateRequest/properties/note' },
+            urgency: { type: 'string', enum: ['Normal', 'High', 'Low'] },
+          },
+          additionalProperties: false,
+        },
+        AdminCreateRequest: {
+          type: 'object',
+          required: ['name', 'email', 'password'],
+          properties: {
+            name: { type: 'string' },
+            email: { type: 'string', format: 'email' },
+            password: { type: 'string', minLength: 6 },
+          },
+          additionalProperties: true,
+        },
+        ConfigUpsertRequest: {
+          type: 'object',
+          required: ['value'],
+          properties: {
+            value: {
+              description: 'Config value. Can be string, number, boolean, object, or array depending on the key.',
+              oneOf: [
+                { type: 'string' },
+                { type: 'number' },
+                { type: 'boolean' },
+                { type: 'object', additionalProperties: true },
+                { type: 'array', items: {} },
+              ],
+            },
+            description: { type: 'string' },
+            isPublic: { type: 'boolean' },
+          },
+          additionalProperties: false,
         },
       },
     },
