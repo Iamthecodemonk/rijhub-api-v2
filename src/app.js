@@ -86,7 +86,12 @@ export default async function app(fastify, opts) {
 
   // Register socket.io plugin (requires fastify-jwt to be available)
   await fastify.register(socketPlugin);
-  await fastify.register(swaggerPlugin);
+  // Register swagger plugin only when enabled. Set `SWAGGER_ENABLED=false` to disable.
+  if (process.env.SWAGGER_ENABLED && process.env.SWAGGER_ENABLED.toLowerCase() === 'false') {
+    fastify.log?.info?.('Swagger documentation disabled (SWAGGER_ENABLED=false)');
+  } else {
+    await fastify.register(swaggerPlugin);
+  }
 
   // Register routes
   // fastify.register(authRoutes, { prefix: 'api/auth' });

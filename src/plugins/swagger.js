@@ -1296,6 +1296,8 @@ function buildOpenApiSpec() {
   };
 }
 
+import docsGuard from '../middlewares/swaggerAuth.js';
+
 export default async function swaggerPlugin(fastify, opts) {
   const sendDocumentationHtml = async (_request, reply) => {
     const html = `<!doctype html>
@@ -1367,12 +1369,13 @@ export default async function swaggerPlugin(fastify, opts) {
     routes: fastify.printRoutes ? fastify.printRoutes() : 'routes info not available',
   });
 
-  fastify.get('/documentation/json', async () => buildOpenApiSpec());
-  fastify.get('/api/documentation/json', async () => buildOpenApiSpec());
+  // Protect docs routes with docsGuard preHandler
+  fastify.get('/documentation/json', { preHandler: docsGuard }, async () => buildOpenApiSpec());
+  fastify.get('/api/documentation/json', { preHandler: docsGuard }, async () => buildOpenApiSpec());
 
-  fastify.get('/documentation/routes', sendRouteTree);
-  fastify.get('/api/documentation/routes', sendRouteTree);
+  fastify.get('/documentation/routes', { preHandler: docsGuard }, sendRouteTree);
+  fastify.get('/api/documentation/routes', { preHandler: docsGuard }, sendRouteTree);
 
-  fastify.get('/documentation', sendDocumentationHtml);
-  fastify.get('/api/documentation', sendDocumentationHtml);
+  fastify.get('/documentation', { preHandler: docsGuard }, sendDocumentationHtml);
+  fastify.get('/api/documentation', { preHandler: docsGuard }, sendDocumentationHtml);
 }
