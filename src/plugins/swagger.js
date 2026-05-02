@@ -439,18 +439,61 @@ export default async function swaggerPlugin(fastify, opts) {
 <html>
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Artisan API Documentation</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css" />
     <style>
-      body { font-family: Arial, sans-serif; margin: 32px; line-height: 1.5; color: #111; }
-      code, pre { background: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
-      a { color: #8a001f; }
+      html, body { margin: 0; min-height: 100%; background: #f7f8fa; }
+      .topbar { display: none; }
+      .docs-header {
+        align-items: center;
+        background: #101828;
+        color: #fff;
+        display: flex;
+        gap: 16px;
+        justify-content: space-between;
+        padding: 14px 24px;
+      }
+      .docs-header h1 {
+        font: 600 18px/1.3 Arial, sans-serif;
+        margin: 0;
+      }
+      .docs-header nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .docs-header a {
+        color: #d0d5dd;
+        font: 14px/1.4 Arial, sans-serif;
+        text-decoration: none;
+      }
+      .docs-header a:hover { color: #fff; text-decoration: underline; }
+      #swagger-ui { max-width: 1460px; margin: 0 auto; }
+      .swagger-ui .scheme-container { box-shadow: none; border-bottom: 1px solid #e4e7ec; }
     </style>
   </head>
   <body>
-    <h1>Artisan API Documentation</h1>
-    <p>OpenAPI JSON is available at <a href="/api/documentation/json">/api/documentation/json</a>.</p>
-    <p>Registered Fastify routes are available at <a href="/api/documentation/routes">/api/documentation/routes</a>.</p>
-    <p>Import the JSON URL into Swagger Editor, Postman, Insomnia, or Stoplight to browse all endpoints.</p>
+    <header class="docs-header">
+      <h1>Artisan API Documentation</h1>
+      <nav aria-label="Documentation links">
+        <a href="/api/documentation/json">OpenAPI JSON</a>
+        <a href="/api/documentation/routes">Route Tree</a>
+      </nav>
+    </header>
+    <div id="swagger-ui"></div>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script>
+      window.addEventListener('load', function () {
+        SwaggerUIBundle({
+          url: '/api/documentation/json',
+          dom_id: '#swagger-ui',
+          deepLinking: true,
+          presets: [SwaggerUIBundle.presets.apis],
+          layout: 'BaseLayout',
+        });
+      });
+    </script>
   </body>
 </html>`;
     reply.header('Content-Type', 'text/html; charset=utf-8').send(html);
