@@ -1,7 +1,8 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import connectDB from '../src/config/db.js';
 import initFirebase from '../src/utils/firebaseAdmin.js';
 import mongoose from 'mongoose';
+dotenv.config();
 
 async function safeImport(path) {
   try {
