@@ -30,11 +30,14 @@ async function initTransporter(fastify) {
 }
 
 export async function createNotification(fastify, userId, { type, title, body, data = {} }) {
-  const n = await Notification.create({ userId, type, title, body, data });
+  // Normalize userId so callers may pass populated objects or raw ids
+  const uid = (userId && (userId._id || userId.id)) ? (userId._id || userId.id) : userId;
+  const uidStr = uid ? String(uid) : uid;
+  const n = await Notification.create({ userId: uidStr, type, title, body, data });
   // try emitting over websocket/socket if available
   try {
-    if (fastify && fastify.io) {
-      fastify.io.to(String(userId)).emit('notification', n);
+    if (fastify && fastify.io && uidStr) {
+      fastify.io.to(uidStr).emit('notification', n);
     }
   } catch (e) {
     fastify?.log?.error?.('socket emit failed', e?.message);
@@ -64,7 +67,7 @@ export async function createNotification(fastify, userId, { type, title, body, d
     // initialize firebase admin if configured
     const admin = initFirebase();
     if (admin) {
-      const tokens = (await DeviceToken.find({ userId }).lean()).map(d => d.token).filter(Boolean);
+      const tokens = (await DeviceToken.find({ userId: uidStr }).lean()).map(d => d.token).filter(Boolean);
       if (tokens.length) {
         // build individual messages per token and use sendAll (sendMulticast deprecated)
         const perTokenData = Object.keys(data || {}).reduce((acc, k) => { acc[k] = String(data[k]); return acc; }, {});
