@@ -14,8 +14,9 @@ const kycSchema = new mongoose.Schema({
   IdUploadFront: { url: String, public_id: String },
   IdUploadBack: { url: String, public_id: String },
 
-  provider: { type: String, enum: ['manual', 'dojah'], default: 'manual' },
+  provider: { type: String, enum: ['manual', 'dojah', 'dojah_sdk'], default: 'manual' },
   verificationType: { type: String },
+  referenceId: { type: String, index: true },
   providerStatus: { type: String },
   providerResponse: { type: Object },
   failureReason: { type: String },

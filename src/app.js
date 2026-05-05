@@ -55,6 +55,9 @@ export default async function app(fastify, opts) {
   normalizeEnv('DOJAH_BASE_URL');
   normalizeEnv('DOJAH_APP_ID');
   normalizeEnv('DOJAH_SECRET_KEY');
+  normalizeEnv('DOJAH_WIDGET_ID');
+  normalizeEnv('DOJAH_WEBHOOK_SECRET');
+  normalizeEnv('DOJAH_VERIFICATION_DETAILS_PATH');
   // Connect MongoDB (don't block app startup if DB is slow/unreachable)
   // connectDB will log and exit on fatal errors; here we start it but don't await
   connectDB()

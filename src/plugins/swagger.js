@@ -188,6 +188,55 @@ function addAuthRoutes(paths) {
 
 function addKycRoutes(paths) {
   const tag = 'KYC';
+  add(paths, 'get', '/api/kyc/dojah/config', {
+    tag,
+    summary: 'Get Dojah SDK widget config',
+    description: 'Returns the public Dojah EasyOnboard widget id for the mobile SDK. Does not expose AppId, secret key, or webhook secret.',
+    responses: {
+      200: { description: 'Dojah SDK config', content: { 'application/json': { schema: { $ref: '#/components/schemas/DojahSdkConfigResponse' } } } },
+      401: errorResponse('Missing or invalid JWT'),
+      500: errorResponse('Dojah widget config missing'),
+    },
+  });
+  add(paths, 'post', '/api/kyc/dojah/start-session', {
+    tag,
+    summary: 'Start Dojah SDK verification session',
+    description: 'Creates a local KYC session and referenceId that the mobile app can pass into the Dojah Flutter SDK.',
+    responses: {
+      200: { description: 'Dojah SDK session started', content: { 'application/json': { schema: { $ref: '#/components/schemas/DojahStartSessionResponse' } } } },
+      401: errorResponse('Missing or invalid JWT'),
+      500: errorResponse('Server error'),
+    },
+  });
+  add(paths, 'post', '/api/kyc/dojah/verify-reference', {
+    tag,
+    summary: 'Verify Dojah SDK reference',
+    description: 'Fetches final verification details from Dojah using the SDK reference id, validates ownership, syncs KYC/User/Artisan verification state, and returns approved, rejected, or pending status.',
+    requestBody: refBody('DojahVerifyReferenceRequest'),
+    responses: {
+      200: { description: 'Verification reference processed', content: { 'application/json': { schema: { $ref: '#/components/schemas/DojahVerifyReferenceResponse' } } } },
+      400: errorResponse('Missing or invalid referenceId'),
+      401: errorResponse('Missing or invalid JWT'),
+      403: errorResponse('referenceId belongs to a different user'),
+      404: errorResponse('referenceId not found at Dojah'),
+      502: errorResponse('Dojah verification details request failed'),
+      500: errorResponse('Server error'),
+    },
+  });
+  add(paths, 'post', '/api/kyc/dojah/webhook', {
+    tag,
+    auth: false,
+    summary: 'Receive Dojah SDK webhook',
+    description: 'Optional Dojah webhook for asynchronous EasyOnboard verification completion. If DOJAH_WEBHOOK_SECRET is set, X-Dojah-Signature is validated with HMAC SHA-256.',
+    requestBody: refBody('DojahWebhookRequest'),
+    responses: {
+      200: successResponse('Webhook processed'),
+      400: errorResponse('Missing referenceId'),
+      401: errorResponse('Invalid webhook signature'),
+      404: errorResponse('KYC session not found for referenceId'),
+      500: errorResponse('Server error'),
+    },
+  });
   add(paths, 'post', '/api/kyc/dojah/nin-selfie', {
     tag,
     operationId: 'verifyDojahNinSelfie',
@@ -699,6 +748,98 @@ function buildOpenApiSpec() {
           },
           additionalProperties: false,
         },
+        DojahSdkConfigResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: true },
+            data: {
+              type: 'object',
+              properties: {
+                widgetId: { type: 'string', example: 'wgt_xxxxxxxxxxxx' },
+                environment: { type: 'string', enum: ['sandbox', 'production'], example: 'sandbox' },
+              },
+              additionalProperties: false,
+            },
+          },
+          additionalProperties: false,
+        },
+        DojahStartSessionResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: true },
+            data: {
+              type: 'object',
+              properties: {
+                referenceId: { type: 'string', example: 'rij_kyc_lx9p2kw_6624b1b15e0c8c2c64a00001' },
+              },
+              additionalProperties: false,
+            },
+          },
+          additionalProperties: false,
+        },
+        DojahVerifyReferenceRequest: {
+          type: 'object',
+          required: ['referenceId'],
+          properties: {
+            referenceId: { type: 'string', example: 'rij_kyc_lx9p2kw_6624b1b15e0c8c2c64a00001' },
+            reference_id: { type: 'string', description: 'Alias for referenceId.' },
+          },
+          additionalProperties: false,
+        },
+        DojahVerifyReferenceResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: true },
+            message: { type: 'string', example: 'KYC verification approved' },
+            data: {
+              type: 'object',
+              properties: {
+                status: { type: 'string', enum: ['approved', 'rejected', 'pending'] },
+                match: { type: 'boolean' },
+                confidenceValue: { type: 'number' },
+                threshold: { type: 'number', example: 90 },
+                provider: { type: 'string', example: 'dojah' },
+                verificationType: { type: 'string', example: 'sdk_widget' },
+                referenceId: { type: 'string' },
+                failureReason: { type: 'string', nullable: true },
+                user: {
+                  type: 'object',
+                  nullable: true,
+                  properties: {
+                    _id: { type: 'string' },
+                    kycVerified: { type: 'boolean' },
+                    isVerified: { type: 'boolean' },
+                    kycLevel: { type: 'number' },
+                  },
+                  additionalProperties: false,
+                },
+                artisan: {
+                  type: 'object',
+                  nullable: true,
+                  properties: {
+                    _id: { type: 'string' },
+                    verified: { type: 'boolean' },
+                  },
+                  additionalProperties: false,
+                },
+              },
+              additionalProperties: false,
+            },
+          },
+          additionalProperties: false,
+        },
+        DojahWebhookRequest: {
+          type: 'object',
+          properties: {
+            reference_id: { type: 'string' },
+            referenceId: { type: 'string' },
+            verification_status: { type: 'string', enum: ['Completed', 'Ongoing', 'Pending', 'Failed', 'Abandoned'] },
+            status: { type: 'boolean' },
+            data: { type: 'object', additionalProperties: false },
+            metadata: { type: 'object', additionalProperties: false },
+          },
+          additionalProperties: false,
+        },
         DojahNinSelfieMultipartRequest: {
           type: 'object',
           required: ['nin'],
@@ -778,7 +919,7 @@ function buildOpenApiSpec() {
               type: 'object',
               properties: {
                 status: { type: 'string', enum: ['pending', 'pending_review', 'approved', 'rejected'] },
-                provider: { type: 'string', enum: ['manual', 'dojah'] },
+                provider: { type: 'string', enum: ['manual', 'dojah', 'dojah_sdk'] },
                 verificationType: { type: 'string', example: 'nin_selfie' },
                 failureReason: { type: 'string', nullable: true },
                 selfieVerification: {
