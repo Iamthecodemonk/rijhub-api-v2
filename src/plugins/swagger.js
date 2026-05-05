@@ -49,6 +49,12 @@ function pathParam(name) {
   return { name, in: 'path', required: true, schema: { type: 'string' } };
 }
 
+function queryParam(name, schema, description = null, required = false) {
+  const param = { name, in: 'query', required, schema };
+  if (description) param.description = description;
+  return param;
+}
+
 function body(content) {
   return {
     required: true,
@@ -307,6 +313,22 @@ function addApplicationRoutes(paths) {
   add(paths, 'get', '/api/artisan-services/artisan/{artisanId}', { tag: 'Artisan Services', auth: false, summary: 'List services for artisan', params: [pathParam('artisanId')] });
   add(paths, 'post', '/api/artisan-services', { tag: 'Artisan Services', summary: 'Create or update artisan services/prices', requestBody: refBody('ArtisanServiceRequest') });
   add(paths, 'get', '/api/artisan-services/me', { tag: 'Artisan Services', summary: 'List my artisan services' });
+  add(paths, 'get', '/api/artisan-services/price-suggestion', {
+    tag: 'Artisan Services',
+    auth: false,
+    summary: 'Get price suggestion for category and optional subcategory',
+    description: 'Returns market pricing guidance for new artisan onboarding. Provide categoryId for main-category guidance, or subCategoryId for exact subservice guidance. When both are provided, the subcategory must belong to the category and the response includes both category and subcategory suggestions.',
+    params: [
+      queryParam('categoryId', { type: 'string', pattern: '^[0-9a-fA-F]{24}$' }, 'Main service/category id.'),
+      queryParam('subCategoryId', { type: 'string', pattern: '^[0-9a-fA-F]{24}$' }, 'Subservice/subcategory id.'),
+    ],
+    responses: {
+      200: { description: 'Price suggestion fetched', content: { 'application/json': { schema: { $ref: '#/components/schemas/PriceSuggestionResponse' } } } },
+      400: errorResponse('categoryId or subCategoryId is required, or subcategory does not belong to category'),
+      404: errorResponse('Category or subcategory not found'),
+      500: errorResponse('Server error'),
+    },
+  });
   add(paths, 'get', '/api/artisan-services/{id}', { tag: 'Artisan Services', summary: 'Get artisan service', params: [pathParam('id')] });
   add(paths, 'put', '/api/artisan-services/{id}', { tag: 'Artisan Services', summary: 'Update artisan service', params: [pathParam('id')], requestBody: refBody('ArtisanServiceRequest') });
   add(paths, 'delete', '/api/artisan-services/{id}', { tag: 'Artisan Services', summary: 'Delete artisan service', params: [pathParam('id')] });
@@ -1167,17 +1189,75 @@ function buildOpenApiSpec() {
         ArtisanServiceRequest: {
           type: 'object',
           properties: {
+            categoryId: { type: 'string', example: '6624b1b15e0c8c2c64a00001' },
             services: {
               type: 'array',
               items: {
                 type: 'object',
+                required: ['subCategoryId', 'price'],
                 properties: {
-                  categoryId: { type: 'string' },
                   subCategoryId: { type: 'string' },
                   price: { type: 'number' },
+                  currency: { type: 'string', example: 'NGN' },
                   description: { type: 'string' },
+                  notes: { type: 'string' },
                 },
               },
+            },
+          },
+          additionalProperties: false,
+        },
+        PriceSuggestionItem: {
+          type: 'object',
+          properties: {
+            basis: { type: 'string', enum: ['category', 'subcategory'] },
+            categoryId: { type: 'string' },
+            subCategoryId: { type: 'string', nullable: true },
+            currency: { type: 'string', example: 'NGN' },
+            artisanCount: { type: 'number', example: 24 },
+            totalPrice: { type: 'number', example: 720000 },
+            averagePrice: { type: 'number', nullable: true, example: 30000 },
+            minimumPrice: { type: 'number', nullable: true, example: 10000 },
+            maximumPrice: { type: 'number', nullable: true, example: 75000 },
+            suggestedMin: { type: 'number', nullable: true, example: 20000 },
+            suggestedMax: { type: 'number', nullable: true, example: 40000 },
+            recommendedPrice: { type: 'number', nullable: true, example: 30000 },
+            confidence: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
+            message: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+        PriceSuggestionResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: true },
+            message: { type: 'string', example: 'Price suggestion fetched' },
+            data: {
+              type: 'object',
+              properties: {
+                category: {
+                  type: 'object',
+                  properties: {
+                    _id: { type: 'string' },
+                    name: { type: 'string', example: 'Plumbing' },
+                  },
+                  additionalProperties: false,
+                },
+                subCategory: {
+                  type: 'object',
+                  nullable: true,
+                  properties: {
+                    _id: { type: 'string' },
+                    name: { type: 'string', example: 'Sink installation' },
+                  },
+                  additionalProperties: false,
+                },
+                primaryBasis: { type: 'string', enum: ['category', 'subcategory'] },
+                primarySuggestion: { $ref: '#/components/schemas/PriceSuggestionItem' },
+                categorySuggestion: { $ref: '#/components/schemas/PriceSuggestionItem' },
+                subCategorySuggestion: { $ref: '#/components/schemas/PriceSuggestionItem', nullable: true },
+              },
+              additionalProperties: false,
             },
           },
           additionalProperties: false,

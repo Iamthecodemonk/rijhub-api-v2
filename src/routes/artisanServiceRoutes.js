@@ -1,4 +1,4 @@
-import { createOrUpdateServices, listMyServices, getService, updateService, deleteService } from '../controllers/artisanServiceController.js';
+import { createOrUpdateServices, listMyServices, getService, updateService, deleteService, getPriceSuggestion } from '../controllers/artisanServiceController.js';
 import { verifyJWT } from '../middlewares/auth.js';
 import { requireRole } from '../middlewares/roles.js';
 
@@ -44,6 +44,21 @@ export default async function (fastify, opts) {
   // Artisan-only endpoints to manage their offered services
   fastify.post('/', { preHandler: [verifyJWT, requireRole('artisan')], schema: createSchema }, createOrUpdateServices);
   fastify.get('/me', { preHandler: [verifyJWT, requireRole('artisan')] }, listMyServices);
+  fastify.get('/price-suggestion', {
+    schema: {
+      querystring: {
+        type: 'object',
+        properties: {
+          categoryId: { type: 'string', pattern: '^[0-9a-fA-F]{24}$' },
+          subCategoryId: { type: 'string', pattern: '^[0-9a-fA-F]{24}$' },
+        },
+        anyOf: [
+          { required: ['categoryId'] },
+          { required: ['subCategoryId'] },
+        ],
+      },
+    },
+  }, getPriceSuggestion);
   fastify.get('/:id', { preHandler: [verifyJWT, requireRole('artisan')] }, getService);
   fastify.put('/:id', { preHandler: [verifyJWT, requireRole('artisan')], schema: updateSchema }, updateService);
   fastify.delete('/:id', { preHandler: [verifyJWT, requireRole('artisan')] }, deleteService);
