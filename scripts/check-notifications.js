@@ -1,8 +1,50 @@
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
 import connectDB from '../src/config/db.js';
 import initFirebase from '../src/utils/firebaseAdmin.js';
 import mongoose from 'mongoose';
-dotenv.config();
+
+// Load .env from repository root (walk up until .env or package.json found)
+function findRepoEnv(startDir) {
+  let cur = startDir;
+  for (let i = 0; i < 6; i++) { // limit depth to avoid infinite loops
+    const envPath = path.join(cur, '.env');
+    const pkgPath = path.join(cur, 'package.json');
+    if (fs.existsSync(envPath)) return envPath;
+    if (fs.existsSync(pkgPath)) return envPath; // prefer .env at repo root even if missing
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return null;
+}
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const envPath = findRepoEnv(process.cwd()) || findRepoEnv(__dirname);
+if (envPath) {
+  const r = dotenv.config({ path: envPath });
+  if (r.error) console.warn('dotenv failed to load', r.error);
+  else console.log('Loaded env from', envPath);
+} else {
+  console.warn('.env not found in repo root or ancestors; relying on process env');
+}
+
+function mask(v) {
+  if (!v) return null;
+  const s = String(v);
+  if (s.length <= 8) return '******';
+  return s.slice(0, 4) + '...' + s.slice(-4);
+}
+
+console.log('cwd=', process.cwd());
+console.log('__dirname=', __dirname);
+console.log('ENV MONGO_URI=', !!process.env.MONGO_URI, 'SMTP_HOST=', !!process.env.SMTP_HOST);
+console.log('MONGO_URI (masked)=', mask(process.env.MONGO_URI));
+console.log('SMTP_HOST (masked)=', mask(process.env.SMTP_HOST));
+console.log('SERVICE_ACCOUNT_KEY_BASE64 present=', !!process.env.SERVICE_ACCOUNT_KEY_BASE64);
 
 async function safeImport(path) {
   try {
