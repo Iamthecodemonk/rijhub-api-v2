@@ -5,7 +5,15 @@ const DEFAULT_DOJAH_BASE_URL = 'https://sandbox.dojah.io';
 function getDojahConfig() {
   const baseURL = (process.env.DOJAH_BASE_URL || DEFAULT_DOJAH_BASE_URL).replace(/\/+$/, '');
   const appId = process.env.DOJAH_APP_ID;
-  const secretKey = process.env.DOJAH_SECRET_KEY;
+  // Normalize secret key: trim, remove surrounding quotes, and strip any leading "Bearer " prefix
+  let secretKey = process.env.DOJAH_SECRET_KEY;
+  if (typeof secretKey === 'string') {
+    secretKey = secretKey.trim();
+    if ((secretKey.startsWith('"') && secretKey.endsWith('"')) || (secretKey.startsWith("'") && secretKey.endsWith("'"))) {
+      secretKey = secretKey.slice(1, -1).trim();
+    }
+    secretKey = secretKey.replace(/^Bearer\s+/i, '');
+  }
 
   if (!appId || !secretKey) {
     const missing = [
@@ -74,6 +82,7 @@ export async function verifyNinWithSelfie({ nin, selfieImage, firstName, lastNam
       requestBodyKeys: Object.keys(body),
       baseURL,
       appId: appId ? String(appId).slice(0, 6) + '...' : undefined,
+      authMasked: secretKey ? (String(secretKey).slice(0, 6) + '...') : undefined,
     };
     // Log minimal, non-secret info to stdout/stderr in case caller has no logger
     try {
@@ -83,6 +92,7 @@ export async function verifyNinWithSelfie({ nin, selfieImage, firstName, lastNam
         requestBodyKeys: err._dojahInfo.requestBodyKeys,
         responseStatus: err.response?.status,
         responseDataSnippet: err.response?.data ? (typeof err.response.data === 'object' ? JSON.stringify(err.response.data).slice(0, 400) : String(err.response.data).slice(0, 400)) : undefined,
+        authMasked: err._dojahInfo.authMasked,
         message: err.message,
       });
     } catch (logErr) {
@@ -116,6 +126,7 @@ export async function getVerificationDetails(referenceId) {
       params: { reference_id: String(referenceId || '').trim() },
       baseURL,
       appId: appId ? String(appId).slice(0, 6) + '...' : undefined,
+      authMasked: secretKey ? (String(secretKey).slice(0, 6) + '...') : undefined,
     };
     try {
       console.error('[dojahService] getVerificationDetails error', {
@@ -124,6 +135,7 @@ export async function getVerificationDetails(referenceId) {
         params: err._dojahInfo.params,
         responseStatus: err.response?.status,
         responseDataSnippet: err.response?.data ? (typeof err.response.data === 'object' ? JSON.stringify(err.response.data).slice(0, 400) : String(err.response.data).slice(0, 400)) : undefined,
+        authMasked: err._dojahInfo.authMasked,
         message: err.message,
       });
     } catch (logErr) { }
