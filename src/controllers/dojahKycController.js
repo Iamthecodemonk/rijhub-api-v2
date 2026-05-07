@@ -314,6 +314,18 @@ export async function verifyDojahReference(request, reply) {
     try {
       dojahResponse = await getVerificationDetails(referenceId);
     } catch (err) {
+      // Log full Dojah error context for diagnosis (non-sensitive parts)
+      try {
+        request.log?.error?.({
+          message: 'getVerificationDetails failed',
+          status: err.response?.status,
+          responseData: err.response?.data,
+          responseHeaders: err.response?.headers,
+          dojahInfo: err._dojahInfo,
+          errMessage: err.message,
+        });
+      } catch (logErr) { /* swallow */ }
+
       const statusCode = err.response?.status === 404 ? 404 : 502;
       const message = statusCode === 404
         ? 'referenceId not found at Dojah'
@@ -455,6 +467,17 @@ export async function verifyNinSelfie(request, reply) {
       const failureReason = err.code === 'DOJAH_CONFIG_MISSING'
         ? err.message
         : err.response?.data?.message || err.response?.data?.error || err.message || 'Dojah verification failed';
+
+      // Log Dojah failure details for debugging
+      try {
+        request.log?.warn?.({
+          message: 'verifyNinWithSelfie failed',
+          status: err.response?.status,
+          responseData: err.response?.data,
+          dojahInfo: err._dojahInfo,
+          errMessage: err.message,
+        });
+      } catch (logErr) { /* swallow */ }
 
       const kyc = await Kyc.findOneAndUpdate(
         { userId },

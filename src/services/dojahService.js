@@ -55,33 +55,78 @@ export async function verifyNinWithSelfie({ nin, selfieImage, firstName, lastNam
   if (firstName) body.first_name = String(firstName).trim();
   if (lastName) body.last_name = String(lastName).trim();
 
-  const response = await axios.post(`${baseURL}/api/v1/kyc/nin/verify`, body, {
-    headers: {
-      AppId: appId,
-      Authorization: secretKey,
-      'Content-Type': 'application/json',
-    },
-    timeout: Number(process.env.DOJAH_TIMEOUT_MS || 30000),
-  });
-
-  return response.data;
+  const url = `${baseURL}/api/v1/kyc/nin/verify`;
+  try {
+    const response = await axios.post(url, body, {
+      headers: {
+        AppId: appId,
+        Authorization: secretKey,
+        'Content-Type': 'application/json',
+      },
+      timeout: Number(process.env.DOJAH_TIMEOUT_MS || 30000),
+    });
+    return response.data;
+  } catch (err) {
+    // Attach Dojah request context for higher-level logging and debugging
+    err._dojahInfo = {
+      url,
+      method: 'POST',
+      requestBodyKeys: Object.keys(body),
+      baseURL,
+      appId: appId ? String(appId).slice(0, 6) + '...' : undefined,
+    };
+    // Log minimal, non-secret info to stdout/stderr in case caller has no logger
+    try {
+      console.error('[dojahService] verifyNinWithSelfie error', {
+        url: err._dojahInfo.url,
+        method: err._dojahInfo.method,
+        requestBodyKeys: err._dojahInfo.requestBodyKeys,
+        responseStatus: err.response?.status,
+        responseDataSnippet: err.response?.data ? (typeof err.response.data === 'object' ? JSON.stringify(err.response.data).slice(0, 400) : String(err.response.data).slice(0, 400)) : undefined,
+        message: err.message,
+      });
+    } catch (logErr) {
+      // swallow logging errors
+    }
+    throw err;
+  }
 }
 
 export async function getVerificationDetails(referenceId) {
   const { baseURL, appId, secretKey } = getDojahConfig();
   const endpoint = process.env.DOJAH_VERIFICATION_DETAILS_PATH || '/api/v1/kyc/verification';
-
-  const response = await axios.get(`${baseURL}${endpoint}`, {
-    headers: {
-      AppId: appId,
-      Authorization: secretKey,
-      'Content-Type': 'application/json',
-    },
-    params: {
-      reference_id: String(referenceId || '').trim(),
-    },
-    timeout: Number(process.env.DOJAH_TIMEOUT_MS || 30000),
-  });
-
-  return response.data;
+  const url = `${baseURL}${endpoint}`;
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        AppId: appId,
+        Authorization: secretKey,
+        'Content-Type': 'application/json',
+      },
+      params: {
+        reference_id: String(referenceId || '').trim(),
+      },
+      timeout: Number(process.env.DOJAH_TIMEOUT_MS || 30000),
+    });
+    return response.data;
+  } catch (err) {
+    err._dojahInfo = {
+      url,
+      method: 'GET',
+      params: { reference_id: String(referenceId || '').trim() },
+      baseURL,
+      appId: appId ? String(appId).slice(0, 6) + '...' : undefined,
+    };
+    try {
+      console.error('[dojahService] getVerificationDetails error', {
+        url: err._dojahInfo.url,
+        method: err._dojahInfo.method,
+        params: err._dojahInfo.params,
+        responseStatus: err.response?.status,
+        responseDataSnippet: err.response?.data ? (typeof err.response.data === 'object' ? JSON.stringify(err.response.data).slice(0, 400) : String(err.response.data).slice(0, 400)) : undefined,
+        message: err.message,
+      });
+    } catch (logErr) { }
+    throw err;
+  }
 }
