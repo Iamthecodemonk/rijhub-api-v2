@@ -12,8 +12,8 @@ export default async function kycRoutes(fastify, opts) {
   fastify.delete('/:id/file', { preHandler: verifyJWT }, deleteKycFile);
 }*/
 
-import { submitKyc, getKycStatus, deleteKycFile } from '../controllers/kycController.js';
-import { verifyJWT } from '../middlewares/auth.js';
+import { submitKyc, getKycStatus, getArtisanKycStatus, deleteKycFile } from '../controllers/kycController.js';
+import { optionalJWT, verifyJWT } from '../middlewares/auth.js';
 
 export default async function kycRoutes(fastify, opts) {
   // multipart handled by fastify-multipart; the controller streams parts
@@ -21,5 +21,6 @@ export default async function kycRoutes(fastify, opts) {
   // attach a strict JSON schema here because multipart bodies are used.
   fastify.post('/submit', { preHandler: [verifyJWT] }, submitKyc);
   fastify.get('/status', { preHandler: verifyJWT }, getKycStatus);
+  fastify.get('/artisan/:id/status', { preHandler: optionalJWT }, getArtisanKycStatus);
   fastify.delete('/:id/file', { preHandler: verifyJWT }, deleteKycFile);
 }

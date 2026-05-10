@@ -488,7 +488,7 @@ export async function verifyNinSelfie(request, reply) {
             idNumber: nin,
             provider: 'dojah',
             verificationType: 'nin_selfie',
-            status: 'pending_review',
+            status: 'rejected',
             providerStatus: 'failed',
             failureReason,
             providerResponse: sanitizeDojahResponse(err.response?.data || null),
@@ -498,15 +498,16 @@ export async function verifyNinSelfie(request, reply) {
       );
 
       await syncVerificationState({ userId, status: kyc.status, request });
-      request.log?.warn?.({ err: failureReason, userId }, 'Dojah NIN selfie verification moved to manual review');
+      request.log?.warn?.({ err: failureReason, userId }, 'Dojah NIN selfie verification failed');
 
       return reply.code(err.code === 'DOJAH_CONFIG_MISSING' ? 500 : 202).send({
         success: err.code !== 'DOJAH_CONFIG_MISSING',
         message: err.code === 'DOJAH_CONFIG_MISSING'
           ? 'Dojah verification is not configured'
-          : 'Automatic verification could not be completed. KYC moved to manual review.',
+          : 'Dojah verification did not go through. Please retry or contact support.',
         data: {
           status: kyc.status,
+          providerStatus: kyc.providerStatus,
           failureReason,
         },
       });
@@ -552,9 +553,11 @@ export async function verifyNinSelfie(request, reply) {
       message: approved ? 'NIN selfie verification approved' : 'NIN selfie verification rejected',
       data: {
         status: kyc.status,
+        providerStatus: kyc.providerStatus,
         match,
         confidenceValue,
         threshold: confidenceThreshold,
+        failureReason,
         user: synced.user ? {
           _id: synced.user._id,
           kycVerified: synced.user.kycVerified,

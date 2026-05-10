@@ -38,6 +38,18 @@ function computeProfileProgress(artisanObj = {}, kycInfo = null) {
   }
 }
 
+function buildPublicKycDetails(kycInfo = null) {
+  if (!kycInfo) return null;
+  return {
+    status: kycInfo.status,
+    providerStatus: kycInfo.providerStatus || null,
+    failureReason: kycInfo.failureReason || null,
+    idType: kycInfo.IdType || kycInfo.idType || null,
+    verified: kycInfo.status === 'approved',
+    submittedAt: kycInfo.createdAt,
+  };
+}
+
 function dedupeArtisansByUser(results = []) {
   const seen = new Set();
   const deduped = [];
@@ -380,16 +392,12 @@ export async function listArtisans(request, reply) {
           serviceCategory: kycInfo.serviceCategory || null,
           yearsExperience: kycInfo.yearsExperience || null,
           status: kycInfo.status || null,
+          providerStatus: kycInfo.providerStatus || null,
+          failureReason: kycInfo.failureReason || null,
           reviewedBy: kycInfo.reviewedBy || null,
           submittedAt: kycInfo.createdAt || null,
           raw: kycInfo
-        } : {
-          // limited view for non-admins
-          status: kycInfo.status,
-          idType: kycInfo.IdType || kycInfo.idType || null,
-          verified: kycInfo.status === 'approved',
-          submittedAt: kycInfo.createdAt
-        }) : null,
+        } : buildPublicKycDetails(kycInfo)) : null,
         bookingsStats: bookingsStats,
         // Profile completion progress (kyc 40%, profile details 40%, verified => 100%)
         profileProgress: computeProfileProgress(obj, kycInfo),
@@ -610,15 +618,12 @@ export async function searchArtisans(request, reply) {
           serviceCategory: kycInfo.serviceCategory || null,
           yearsExperience: kycInfo.yearsExperience || null,
           status: kycInfo.status || null,
+          providerStatus: kycInfo.providerStatus || null,
+          failureReason: kycInfo.failureReason || null,
           reviewedBy: kycInfo.reviewedBy || null,
           submittedAt: kycInfo.createdAt || null,
           raw: kycInfo
-        } : {
-          status: kycInfo.status,
-          idType: kycInfo.IdType || kycInfo.idType || null,
-          verified: kycInfo.status === 'approved',
-          submittedAt: kycInfo.createdAt
-        }) : null,
+        } : buildPublicKycDetails(kycInfo)) : null,
         bookingsStats: bookingsStats,
         profileProgress: computeProfileProgress(obj, kycInfo),
         trade: (servicesMap[String(rawUserId)] || []).map(s => s.categoryId && s.categoryId.name).filter(Boolean),
@@ -751,6 +756,7 @@ export async function getArtisan(request, reply) {
 
     const out = artisan.toObject ? artisan.toObject() : artisan;
     out.profileProgress = computeProfileProgress(out, kycInfo);
+    out.kycDetails = buildPublicKycDetails(kycInfo);
     // include artisan services (ArtisanService.artisanId stores User._id)
     try {
       const services = await ArtisanService.find({ artisanId: artisan.userId, isActive: true }).populate('categoryId', 'name').populate('services.subCategoryId', 'name').lean();
@@ -777,6 +783,7 @@ export async function getArtisanByUser(request, reply) {
 
     const out = artisan.toObject ? artisan.toObject() : artisan;
     out.profileProgress = computeProfileProgress(out, kycInfo);
+    out.kycDetails = buildPublicKycDetails(kycInfo);
     try {
       const services = await ArtisanService.find({ artisanId: artisan.userId, isActive: true }).populate('categoryId', 'name').populate('services.subCategoryId', 'name').lean();
       out.services = services || [];

@@ -1,12 +1,39 @@
 import Kyc from '../models/Kyc.js';
 import User from '../models/User.js';
+import Artisan from '../models/Artisan.js';
 import cloudinary from '../utils/cloudinary.js';
+import mongoose from 'mongoose';
 
 function getUserKycFlags(status) {
   if (status === 'approved') {
     return { kycLevel: 2, kycVerified: true, isVerified: true };
   }
   return { kycLevel: 1, kycVerified: false, isVerified: false };
+}
+
+function buildKycStatusPayload(record = null, artisan = null, user = null) {
+  return {
+    status: record?.status || 'not_submitted',
+    provider: record?.provider || null,
+    providerStatus: record?.providerStatus || null,
+    verificationType: record?.verificationType || null,
+    failureReason: record?.failureReason || null,
+    reviewedBy: record?.reviewedBy || null,
+    submittedAt: record?.createdAt || null,
+    verifiedAt: record?.verifiedAt || null,
+    verified: !!(record?.status === 'approved' || artisan?.verified || user?.kycVerified || user?.isVerified),
+    artisan: artisan ? {
+      _id: artisan._id,
+      userId: artisan.userId,
+      verified: !!artisan.verified,
+    } : null,
+    user: user ? {
+      _id: user._id,
+      kycVerified: !!user.kycVerified,
+      isVerified: !!user.isVerified,
+      kycLevel: user.kycLevel || 0,
+    } : null,
+  };
 }
 
 export async function submitKyc(request, reply) {
@@ -124,6 +151,38 @@ export async function getKycStatus(request, reply) {
   } catch (err) {
     request.log?.error?.(err);
     return reply.code(500).send({ success: false, message: 'Failed to get KYC status' });
+  }
+}
+
+export async function getArtisanKycStatus(request, reply) {
+  try {
+    const id = String(request.params?.id || '').trim();
+    if (!id) return reply.code(400).send({ success: false, message: 'artisan id required' });
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return reply.code(400).send({ success: false, message: 'invalid artisan id' });
+    }
+
+    const artisan = await Artisan.findOne({
+      $or: [
+        { _id: id },
+        { userId: id },
+      ],
+    }).lean();
+
+    if (!artisan) return reply.code(404).send({ success: false, message: 'Artisan not found' });
+
+    const [record, user] = await Promise.all([
+      Kyc.findOne({ userId: artisan.userId }).sort({ createdAt: -1 }).lean(),
+      User.findById(artisan.userId).select('_id kycVerified isVerified kycLevel').lean(),
+    ]);
+
+    return reply.send({
+      success: true,
+      data: buildKycStatusPayload(record, artisan, user),
+    });
+  } catch (err) {
+    request.log?.error?.(err);
+    return reply.code(500).send({ success: false, message: 'Failed to get artisan KYC status' });
   }
 }
 

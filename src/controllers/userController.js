@@ -23,6 +23,18 @@ function getUserKycFlags(status) {
   return { kycLevel: 1, kycVerified: false, isVerified: false };
 }
 
+function buildPublicKycDetails(kycInfo = null) {
+  if (!kycInfo) return null;
+  return {
+    status: kycInfo.status,
+    providerStatus: kycInfo.providerStatus || null,
+    failureReason: kycInfo.failureReason || null,
+    idType: kycInfo.IdType || kycInfo.idType || null,
+    verified: kycInfo.status === 'approved',
+    submittedAt: kycInfo.createdAt,
+  };
+}
+
 export async function getAllUsers(req, reply) {
   try {
     const { page = 1, limit = 50, role, q } = req.query || {};
@@ -91,7 +103,10 @@ export async function getMyProfile(req, reply) {
       }
     }
 
-    return reply.send({ success: true, data: user });
+    const data = user.toObject ? user.toObject() : user;
+    data.kycDetails = buildPublicKycDetails(latestKyc);
+
+    return reply.send({ success: true, data });
   } catch (err) {
     req.log?.error?.(err);
     return reply.code(500).send({ success: false, message: 'Server error' });

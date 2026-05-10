@@ -246,7 +246,7 @@ function addKycRoutes(paths) {
       'The selfie can be sent as base64 JSON or as multipart/form-data.',
       'Accepted selfie field names are selfieImage, selfie_image, and selfie.',
       'A successful match sets KYC to approved, marks the user as verified, and verifies the artisan profile when one exists.',
-      'If Dojah is temporarily unavailable, the KYC record moves to pending_review for manual admin handling.',
+      'If Dojah rejects the request or the verification call fails, the KYC record is marked rejected with providerStatus failed and failureReason for the client UI.',
       'Approval requires Dojah selfie match plus confidence greater than or equal to DOJAH_NIN_SELFIE_CONFIDENCE_THRESHOLD, default 90.',
     ].join('\n\n'),
     requestBody: {
@@ -311,7 +311,7 @@ function addKycRoutes(paths) {
         },
       },
       202: {
-        description: 'Automatic verification moved to manual review',
+        description: 'Verification request failed before approval could be completed',
         content: { 'application/json': { schema: { $ref: '#/components/schemas/DojahNinSelfieManualReviewResponse' } } },
       },
       400: errorResponse('Invalid NIN or missing selfie'),
@@ -331,6 +331,19 @@ function addKycRoutes(paths) {
     responses: {
       200: { description: 'Current KYC status', content: { 'application/json': { schema: { $ref: '#/components/schemas/KycStatusResponse' } } } },
       401: errorResponse('Unauthorized'),
+      500: errorResponse('Server error'),
+    },
+  });
+  add(paths, 'get', '/api/kyc/artisan/{id}/status', {
+    tag,
+    auth: false,
+    params: [pathParam('id')],
+    summary: 'Get an artisan KYC status',
+    description: 'Returns the latest KYC status for an artisan. The id can be the artisan profile id or the linked user id.',
+    responses: {
+      200: { description: 'Artisan KYC status', content: { 'application/json': { schema: { $ref: '#/components/schemas/ArtisanKycStatusResponse' } } } },
+      400: errorResponse('Invalid artisan id'),
+      404: errorResponse('Artisan not found'),
       500: errorResponse('Server error'),
     },
   });
@@ -864,10 +877,12 @@ function buildOpenApiSpec() {
             data: {
               type: 'object',
               properties: {
-                status: { type: 'string', enum: ['approved', 'rejected', 'pending_review'] },
+                status: { type: 'string', enum: ['approved', 'rejected'] },
+                providerStatus: { type: 'string', enum: ['verified', 'not_verified', 'failed'], nullable: true },
                 match: { type: 'boolean' },
                 confidenceValue: { type: 'number' },
                 threshold: { type: 'number' },
+                failureReason: { type: 'string', nullable: true },
                 user: {
                   type: 'object',
                   nullable: true,
@@ -898,11 +913,12 @@ function buildOpenApiSpec() {
           type: 'object',
           properties: {
             success: { type: 'boolean', example: true },
-            message: { type: 'string', example: 'Automatic verification could not be completed. KYC moved to manual review.' },
+            message: { type: 'string', example: 'Dojah verification did not go through. Please retry or contact support.' },
             data: {
               type: 'object',
               properties: {
-                status: { type: 'string', example: 'pending_review' },
+                status: { type: 'string', example: 'rejected' },
+                providerStatus: { type: 'string', example: 'failed' },
                 failureReason: { type: 'string' },
               },
               additionalProperties: false,
@@ -928,6 +944,47 @@ function buildOpenApiSpec() {
                     match: { type: 'boolean' },
                     confidenceValue: { type: 'number' },
                     threshold: { type: 'number' },
+                  },
+                },
+              },
+              additionalProperties: false,
+            },
+          },
+          additionalProperties: false,
+        },
+        ArtisanKycStatusResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: true },
+            data: {
+              type: 'object',
+              properties: {
+                status: { type: 'string', enum: ['not_submitted', 'pending', 'pending_review', 'approved', 'rejected'] },
+                provider: { type: 'string', enum: ['manual', 'dojah', 'dojah_sdk'], nullable: true },
+                providerStatus: { type: 'string', nullable: true },
+                verificationType: { type: 'string', nullable: true },
+                failureReason: { type: 'string', nullable: true },
+                reviewedBy: { type: 'string', nullable: true },
+                submittedAt: { type: 'string', format: 'date-time', nullable: true },
+                verifiedAt: { type: 'string', format: 'date-time', nullable: true },
+                verified: { type: 'boolean' },
+                artisan: {
+                  type: 'object',
+                  nullable: true,
+                  properties: {
+                    _id: { type: 'string' },
+                    userId: { type: 'string' },
+                    verified: { type: 'boolean' },
+                  },
+                },
+                user: {
+                  type: 'object',
+                  nullable: true,
+                  properties: {
+                    _id: { type: 'string' },
+                    kycVerified: { type: 'boolean' },
+                    isVerified: { type: 'boolean' },
+                    kycLevel: { type: 'number' },
                   },
                 },
               },
