@@ -145,9 +145,19 @@ export async function getKycStatus(request, reply) {
   try {
     const userId = request.user?.id || request.query.userId;
     if (!userId) return reply.code(400).send({ success: false, message: 'userId required' });
-    const record = await Kyc.findOne({ userId }).sort({ createdAt: -1 });
+    const [latestRecord, approvedRecord, user, artisan] = await Promise.all([
+      Kyc.findOne({ userId }).sort({ createdAt: -1 }).lean(),
+      Kyc.findOne({ userId, status: 'approved' }).sort({ verifiedAt: -1, createdAt: -1 }).lean(),
+      User.findById(userId).select('_id kycVerified isVerified kycLevel').lean(),
+      Artisan.findOne({ userId }).select('_id userId verified').lean(),
+    ]);
+
+    const record = (user?.kycVerified || user?.isVerified || artisan?.verified) && approvedRecord
+      ? approvedRecord
+      : latestRecord;
+
     if (!record) return reply.code(404).send({ success: false, message: 'No KYC record' });
-    return reply.send({ success: true, data: { status: record.status, reviewedBy: record.reviewedBy } });
+    return reply.send({ success: true, data: buildKycStatusPayload(record, artisan, user) });
   } catch (err) {
     request.log?.error?.(err);
     return reply.code(500).send({ success: false, message: 'Failed to get KYC status' });

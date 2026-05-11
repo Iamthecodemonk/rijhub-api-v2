@@ -35,6 +35,11 @@ function buildPublicKycDetails(kycInfo = null) {
   };
 }
 
+function chooseVisibleKycRecord({ latestKyc = null, approvedKyc = null, user = null, artisan = null } = {}) {
+  const verified = !!(user?.kycVerified || user?.isVerified || artisan?.verified);
+  return verified && approvedKyc ? approvedKyc : latestKyc;
+}
+
 export async function getAllUsers(req, reply) {
   try {
     const { page = 1, limit = 50, role, q } = req.query || {};
@@ -78,14 +83,17 @@ export async function getMyProfile(req, reply) {
     const userId = req.user?.id;
     console.log(userId);
     if (!userId) return reply.code(401).send({ success: false, message: 'Unauthorized' });
-    const [user, latestKyc] = await Promise.all([
+    const [user, latestKyc, approvedKyc, artisan] = await Promise.all([
       User.findById(userId),
       Kyc.findOne({ userId }).sort({ createdAt: -1 }).lean(),
+      Kyc.findOne({ userId, status: 'approved' }).sort({ verifiedAt: -1, createdAt: -1 }).lean(),
+      Artisan.findOne({ userId }).select('verified').lean(),
     ]);
     if (!user) return reply.code(404).send({ success: false, message: 'User not found' });
+    const visibleKyc = chooseVisibleKycRecord({ latestKyc, approvedKyc, user, artisan });
 
-    if (latestKyc) {
-      const nextFlags = getUserKycFlags(latestKyc.status);
+    if (visibleKyc) {
+      const nextFlags = getUserKycFlags(visibleKyc.status);
       const needsSync =
         user.kycLevel !== nextFlags.kycLevel ||
         !!user.kycVerified !== nextFlags.kycVerified ||
@@ -104,7 +112,7 @@ export async function getMyProfile(req, reply) {
     }
 
     const data = user.toObject ? user.toObject() : user;
-    data.kycDetails = buildPublicKycDetails(latestKyc);
+    data.kycDetails = buildPublicKycDetails(visibleKyc);
 
     return reply.send({ success: true, data });
   } catch (err) {

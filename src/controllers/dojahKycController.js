@@ -368,6 +368,17 @@ export async function verifyDojahReference(request, reply) {
     }
 
     const checks = readDojahSdkChecks(dojahResponse);
+    request.log?.info?.({
+      userId,
+      referenceId,
+      dojahVerificationStatus: checks.verificationStatus || null,
+      completed: checks.completed,
+      pending: checks.pending,
+      failed: checks.failed,
+      match: checks.match,
+      confidenceValue: checks.confidenceValue,
+    }, 'Dojah verify-reference parsed result');
+
     if (checks.pending) {
       const { kyc } = await persistSdkVerification({
         userId,

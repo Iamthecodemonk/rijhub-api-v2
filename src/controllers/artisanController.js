@@ -50,6 +50,11 @@ function buildPublicKycDetails(kycInfo = null) {
   };
 }
 
+function chooseVisibleKycRecord({ latestKyc = null, approvedKyc = null, user = null, artisan = null } = {}) {
+  const verified = !!(artisan?.verified || user?.kycVerified || user?.isVerified);
+  return verified && approvedKyc ? approvedKyc : latestKyc;
+}
+
 function dedupeArtisansByUser(results = []) {
   const seen = new Set();
   const deduped = [];
@@ -751,7 +756,12 @@ export async function getArtisan(request, reply) {
     let kycInfo = null;
     try {
       const Kyc = (await import('../models/Kyc.js')).default;
-      kycInfo = await Kyc.findOne({ userId: artisan.userId }).sort({ createdAt: -1 }).lean();
+      const [latestKyc, approvedKyc, user] = await Promise.all([
+        Kyc.findOne({ userId: artisan.userId }).sort({ createdAt: -1 }).lean(),
+        Kyc.findOne({ userId: artisan.userId, status: 'approved' }).sort({ verifiedAt: -1, createdAt: -1 }).lean(),
+        User.findById(artisan.userId).select('kycVerified isVerified').lean(),
+      ]);
+      kycInfo = chooseVisibleKycRecord({ latestKyc, approvedKyc, user, artisan });
     } catch (e) { request.log?.warn?.('getArtisan: failed to fetch kyc', e?.message || e); }
 
     const out = artisan.toObject ? artisan.toObject() : artisan;
@@ -778,7 +788,12 @@ export async function getArtisanByUser(request, reply) {
     let kycInfo = null;
     try {
       const Kyc = (await import('../models/Kyc.js')).default;
-      kycInfo = await Kyc.findOne({ userId: artisan.userId }).sort({ createdAt: -1 }).lean();
+      const [latestKyc, approvedKyc, user] = await Promise.all([
+        Kyc.findOne({ userId: artisan.userId }).sort({ createdAt: -1 }).lean(),
+        Kyc.findOne({ userId: artisan.userId, status: 'approved' }).sort({ verifiedAt: -1, createdAt: -1 }).lean(),
+        User.findById(artisan.userId).select('kycVerified isVerified').lean(),
+      ]);
+      kycInfo = chooseVisibleKycRecord({ latestKyc, approvedKyc, user, artisan });
     } catch (e) { request.log?.warn?.('getArtisanByUser: failed to fetch kyc', e?.message || e); }
 
     const out = artisan.toObject ? artisan.toObject() : artisan;
