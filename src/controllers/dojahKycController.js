@@ -7,8 +7,9 @@ import { getDojahWidgetConfig, getVerificationDetails, normalizeBase64Image, ver
 
 const APPROVED_FLAGS = { kycLevel: 2, kycVerified: true, isVerified: true };
 const UNAPPROVED_FLAGS = { kycLevel: 1, kycVerified: false, isVerified: false };
-const PENDING_DOJAH_STATUSES = ['pending', 'ongoing', 'abandoned'];
-const FAILED_DOJAH_STATUSES = ['failed', 'rejected'];
+const COMPLETED_DOJAH_STATUSES = ['completed', 'complete', 'success', 'successful', 'verified', 'approved', 'passed'];
+const PENDING_DOJAH_STATUSES = ['pending', 'ongoing', 'in_progress', 'in-progress', 'processing'];
+const FAILED_DOJAH_STATUSES = ['failed', 'rejected', 'declined', 'abandoned', 'cancelled', 'canceled'];
 
 function readSelfieVerification(dojahResponse = {}) {
   const entity = dojahResponse?.entity || dojahResponse?.data?.entity || {};
@@ -40,8 +41,19 @@ function readDojahSdkStatus(dojahResponse = {}) {
   const rawStatus = dojahResponse.verification_status ||
     dojahResponse.verificationStatus ||
     dojahResponse.status_text ||
+    dojahResponse.statusText ||
+    (typeof dojahResponse.status === 'string' ? dojahResponse.status : '') ||
+    dojahResponse.data?.verification_status ||
+    dojahResponse.data?.verificationStatus ||
+    dojahResponse.data?.status_text ||
+    dojahResponse.data?.statusText ||
+    (typeof dojahResponse.data?.status === 'string' ? dojahResponse.data.status : '') ||
     dojahResponse.entity?.verificationStatus ||
     dojahResponse.entity?.verification_status ||
+    dojahResponse.entity?.status_text ||
+    (typeof dojahResponse.entity?.status === 'string' ? dojahResponse.entity.status : '') ||
+    dojahResponse.entity?.data?.verificationStatus ||
+    dojahResponse.entity?.data?.verification_status ||
     '';
   return String(rawStatus || '').trim();
 }
@@ -66,14 +78,20 @@ function readDojahSdkChecks(dojahResponse = {}) {
   const selfie = data.selfie || data.liveness || data.face_liveness || {};
   const faceMatch = data.face_match || data.faceMatch || data.selfie_match || data.government_data || data.id || {};
   const overallStatus = dojahResponse.status;
+  const dataStatus = dojahResponse.data?.status;
+  const entityStatus = dojahResponse.entity?.status;
+  const responseMessage = String(dojahResponse.message || dojahResponse.data?.message || '').toLowerCase();
   const verificationStatus = readDojahSdkStatus(dojahResponse);
   const normalizedStatus = verificationStatus.toLowerCase();
   const livenessPassed = selfie.status !== false;
   const faceMatchPassed = faceMatch.status !== false;
-  const overallPassed = overallStatus !== false;
-  const completed = normalizedStatus === 'completed';
+  const overallPassed = overallStatus !== false && dataStatus !== false && entityStatus !== false;
+  const statusLooksCompleted = COMPLETED_DOJAH_STATUSES.includes(normalizedStatus);
+  const messageLooksCompleted = responseMessage.includes('successfully completed') || responseMessage.includes('completed the verification');
+  const responseMarkedSuccessful = overallStatus === true || dataStatus === true || entityStatus === true;
+  const completed = statusLooksCompleted || (responseMarkedSuccessful && messageLooksCompleted);
   const pending = PENDING_DOJAH_STATUSES.includes(normalizedStatus);
-  const failed = FAILED_DOJAH_STATUSES.includes(normalizedStatus) || overallStatus === false;
+  const failed = FAILED_DOJAH_STATUSES.includes(normalizedStatus) || overallStatus === false || dataStatus === false || entityStatus === false;
   const confidenceValue = Number(
     dojahResponse.confidenceValue ??
     dojahResponse.confidence_value ??
@@ -217,7 +235,7 @@ async function persistSdkVerification({ userId, referenceId, dojahResponse, stat
     {};
 
   const kyc = await Kyc.findOneAndUpdate(
-    { userId },
+    referenceId ? { referenceId } : { userId },
     {
       $set: {
         userId,
