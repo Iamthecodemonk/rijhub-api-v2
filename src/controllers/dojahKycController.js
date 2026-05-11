@@ -11,6 +11,10 @@ const COMPLETED_DOJAH_STATUSES = ['completed', 'complete', 'success', 'successfu
 const PENDING_DOJAH_STATUSES = ['pending', 'ongoing', 'in_progress', 'in-progress', 'processing'];
 const FAILED_DOJAH_STATUSES = ['failed', 'rejected', 'declined', 'abandoned', 'cancelled', 'canceled'];
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function readSelfieVerification(dojahResponse = {}) {
   const entity = dojahResponse?.entity || dojahResponse?.data?.entity || {};
   const verification = entity.selfie_verification || entity.selfieVerification || {};
@@ -91,7 +95,12 @@ function readDojahSdkChecks(dojahResponse = {}) {
   const responseMarkedSuccessful = overallStatus === true || dataStatus === true || entityStatus === true;
   const completed = statusLooksCompleted || (responseMarkedSuccessful && messageLooksCompleted);
   const pending = PENDING_DOJAH_STATUSES.includes(normalizedStatus);
-  const failed = FAILED_DOJAH_STATUSES.includes(normalizedStatus) || overallStatus === false || dataStatus === false || entityStatus === false;
+  const failed = !pending && (
+    FAILED_DOJAH_STATUSES.includes(normalizedStatus) ||
+    overallStatus === false ||
+    dataStatus === false ||
+    entityStatus === false
+  );
   const confidenceValue = Number(
     dojahResponse.confidenceValue ??
     dojahResponse.confidence_value ??
@@ -367,7 +376,29 @@ export async function verifyDojahReference(request, reply) {
       });
     }
 
-    const checks = readDojahSdkChecks(dojahResponse);
+    let checks = readDojahSdkChecks(dojahResponse);
+    const retryCount = Math.max(0, Number(process.env.DOJAH_VERIFY_REFERENCE_RETRIES || 3));
+    const retryDelayMs = Math.max(0, Number(process.env.DOJAH_VERIFY_REFERENCE_RETRY_DELAY_MS || 2000));
+
+    for (let attempt = 1; checks.pending && attempt <= retryCount; attempt += 1) {
+      if (retryDelayMs) await sleep(retryDelayMs);
+      const nextResponse = await getVerificationDetails(referenceId);
+      const nextChecks = readDojahSdkChecks(nextResponse);
+      request.log?.info?.({
+        userId,
+        referenceId,
+        attempt,
+        dojahVerificationStatus: nextChecks.verificationStatus || null,
+        completed: nextChecks.completed,
+        pending: nextChecks.pending,
+        failed: nextChecks.failed,
+        match: nextChecks.match,
+        confidenceValue: nextChecks.confidenceValue,
+      }, 'Dojah verify-reference retry parsed result');
+      dojahResponse = nextResponse;
+      checks = nextChecks;
+    }
+
     request.log?.info?.({
       userId,
       referenceId,
@@ -396,8 +427,11 @@ export async function verifyDojahReference(request, reply) {
         data: {
           status: kyc.status,
           provider: 'dojah',
+          providerStatus: kyc.providerStatus,
           verificationType: 'sdk_widget',
           referenceId,
+          dojahVerificationStatus: checks.verificationStatus || null,
+          retryAfterSeconds: Math.ceil(retryDelayMs / 1000) || 2,
         },
       });
     }
