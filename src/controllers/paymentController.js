@@ -340,10 +340,21 @@ export async function verifyPayment(request, reply) {
               booking.status = booking.status === 'pending' ? 'awaiting-acceptance' : booking.status;
               await booking.save();
 
+              tx.bookingId = booking._id;
+              tx.payerId = booking.customerId?._id || booking.customerId || tx.payerId || null;
+              tx.payeeId = booking.artisanId?._id || booking.artisanId || tx.payeeId || null;
+              tx.amount = Number(booking.price || tx.amount || 0);
+              tx.status = 'holding';
+              await tx.save();
+
               if (!booking.chatId) {
                 const chat = await Chat.create({ bookingId: booking._id, participants: [booking.customerId._id, booking.artisanId._id], messages: [] });
                 booking.chatId = chat._id;
                 await booking.save();
+              }
+
+              if (booking.status === 'completed' && booking.paymentMode === 'afterCompletion') {
+                await releaseCompletedDeferredBookingPayment(booking, tx, request);
               }
 
               const bookingName = booking?.service || 'your booking';

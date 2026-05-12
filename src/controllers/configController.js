@@ -43,8 +43,8 @@ export async function upsertConfig(request, reply) {
       if (isNaN(n) || n < 0 || n > 100) return reply.code(400).send({ success: false, message: 'COMPANY_FEE_PCT must be a number between 0 and 100' });
       parsed = n;
       // force type to number for storage
-      const updated = await setConfig(key, parsed, { type: 'number', description: description || 'Platform/company fee percent', updatedBy: request.user?.id });
-      return reply.send({ success: true, data: { key, value: updated } });
+      const updated = await setConfig(targetKey, parsed, { type: 'number', description: description || 'Platform/company fee percent', updatedBy: request.user?.id });
+      return reply.send({ success: true, data: { key: targetKey, value: updated } });
     }
 
     parsed = type === 'number' ? Number(value) : (type === 'json' ? value : String(value));

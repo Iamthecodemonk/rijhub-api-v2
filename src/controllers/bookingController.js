@@ -275,7 +275,7 @@ export async function hireAndInitialize(request, reply) {
         }
       })();
 
-      return reply.code(201).send({ success: true, message: 'Booking created with deferred payment; payment will be collected after completion.', data: { booking } });
+      return reply.code(201).send({ success: true, message: 'Booking created with pay-after-service payment; customer must pay before completion.', data: { booking } });
     }
 
     // NOTE: notification moved below to run after payment initialization
@@ -609,7 +609,9 @@ export async function initiateDeferredPayment(request, reply) {
     if (!booking) return reply.code(404).send({ success: false, message: 'Booking not found' });
     if (booking.paymentMode !== 'afterCompletion') return reply.code(400).send({ success: false, message: 'Booking is not configured for deferred payment' });
     if (booking.paymentStatus === 'paid') return reply.code(400).send({ success: false, message: 'Booking is already paid' });
-    if (booking.status !== 'completed') return reply.code(400).send({ success: false, message: 'Payment after completion is only available for completed bookings' });
+    if (!['accepted', 'in-progress', 'completed'].includes(booking.status)) {
+      return reply.code(400).send({ success: false, message: `Payment after service is not available from status: ${booking.status}` });
+    }
 
     const existingTx = await Transaction.findOne({ bookingId: booking._id, status: { $in: ['pending', 'holding'] } });
     if (existingTx) {
@@ -850,18 +852,12 @@ export async function completeBooking(request, reply) {
       });
     }
 
-    // Guard: for afterCompletion bookings, ensure payment has at least been initiated
-    // Skip check if payment is not required (e.g., free bookings, internal jobs, or admin override)
-    const skipPaymentCheck = request.query?.skipPayment === 'true' || request.query?.noPayment === 'true' ||
-                            booking.price === 0 || booking.price === null || booking.price === undefined;
-    if (booking.paymentMode === 'afterCompletion' && !skipPaymentCheck) {
-      const hasPaidTx = await Transaction.findOne({ bookingId: booking._id, status: 'holding' });
-      const hasInitiatedPayment = await Transaction.findOne({ bookingId: booking._id, status: 'pending', paymentGatewayRef: { $exists: true, $ne: null } });
-
-      if (!hasPaidTx && !hasInitiatedPayment) {
+    if (booking.paymentMode === 'afterCompletion') {
+      const paidTx = await Transaction.findOne({ bookingId: booking._id, status: 'holding' });
+      if (!paidTx) {
         return reply.code(400).send({
           success: false,
-          message: 'Payment must be initialized before marking work as complete. Use POST /booking/:id/pay-after-completion to initialize payment, or add ?skipPayment=true for no-payment completion.'
+          message: 'Payment must be completed before marking this booking complete. Use POST /bookings/:id/pay-after-completion, then verify the Paystack payment.'
         });
       }
     }
@@ -893,7 +889,8 @@ export async function completeBooking(request, reply) {
       }
     }
 
-    // release payment if transaction in holding
+    // release payment if transaction in holding. For pay-after-service bookings,
+    // the transaction may not exist yet; it will be released by payment verification/webhook.
     if (tx && (tx.status === 'holding' || tx.status === 'released') && !hasFinalizedPayout(tx) && !tx.transferRef) {
       let feePct = 0;
       try {

@@ -246,7 +246,7 @@ export async function acceptQuote(request, reply) {
     await chat.save();
 
     if (booking.paymentMode === 'afterCompletion') {
-      return reply.code(200).send({ success: true, data: { quote, booking, payment: null, message: 'Booking accepted for deferred payment. Pay after completion with /booking/:id/pay-after-completion.' } });
+      return reply.code(200).send({ success: true, data: { quote, booking, payment: null, message: 'Booking accepted for pay-after-service payment. Pay before completion with /booking/:id/pay-after-completion.' } });
     }
 
     // Initialize payment for the accepted quote's serviceCharge (frontend should complete the payment)
@@ -290,7 +290,7 @@ export async function payWithQuote(request, reply) {
     if (!quote) return reply.code(404).send({ success: false, message: 'Quote not found' });
 
     if (booking.paymentMode === 'afterCompletion') {
-      return reply.code(400).send({ success: false, message: 'Booking deferred to after completion; payment should be made after booking is completed.' });
+      return reply.code(400).send({ success: false, message: 'Booking uses pay-after-service; payment should be made before marking the booking completed.' });
     }
 
     // use existing booking email or customer's email
@@ -386,7 +386,7 @@ export async function acceptJobQuote(request, reply) {
         request.log?.warn?.('notify hired artisan failed', e?.message || e);
       }
 
-      return reply.code(200).send({ success: true, data: { quote, booking, payment: null, message: 'Booking created with deferred payment; pay after completion using /booking/:id/pay-after-completion.' } });
+      return reply.code(200).send({ success: true, data: { quote, booking, payment: null, message: 'Booking created with pay-after-service payment; pay before completion using /booking/:id/pay-after-completion.' } });
     }
 
     // Do not close the job here; it will be closed after successful payment and booking creation.
