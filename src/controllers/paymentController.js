@@ -9,7 +9,7 @@ import SpecialServiceRequest from '../models/SpecialServiceRequest.js';
 import { createNotification } from '../utils/notifier.js';
 import { getConfig } from '../utils/config.js';
 import { normalizePaymentMode } from '../utils/paymentMode.js';
-import { attemptPaystackTransfer, creditArtisanWalletIfNeeded, ensurePaystackRecipient, getPayoutNotificationState, hasFinalizedPayout } from '../utils/payout.js';
+import { attemptPaystackTransfer, creditArtisanWalletIfNeeded, ensurePaystackRecipient, getPayoutNotificationState, hasFinalizedPayout, recordArtisanPayoutStatsIfNeeded, recordCustomerSpendStatsIfNeeded } from '../utils/payout.js';
 import { getPaystackCallbackUrl } from '../utils/paystack.js';
 import { formatNotificationMoney } from '../utils/notificationText.js';
 import crypto from 'crypto';
@@ -29,6 +29,9 @@ async function releaseCompletedDeferredBookingPayment(booking, tx, request) {
   }
   const fee = Math.round((amount * feePct) / 100 * 100) / 100;
   const payAmount = Math.round((amount - fee) * 100) / 100;
+  tx.payerId = booking.customerId._id;
+  tx.payeeId = booking.artisanId._id;
+  tx.amount = amount;
   tx.companyFee = fee;
   tx.status = 'released';
   tx.releasedAt = tx.releasedAt || new Date();
@@ -48,8 +51,11 @@ async function releaseCompletedDeferredBookingPayment(booking, tx, request) {
   }
 
   if (transferResult.finalized && transferResult.succeeded) {
+    await recordArtisanPayoutStatsIfNeeded({ tx, wallet, payAmount });
     tx.status = 'paid';
     await tx.save();
+  } else if (transferResult.inFlight) {
+    await recordArtisanPayoutStatsIfNeeded({ tx, wallet, payAmount });
   } else if (!autoPayout || !transferResult.attempted || (transferResult.attempted && !transferResult.succeeded && !transferResult.inFlight)) {
     await creditArtisanWalletIfNeeded({ tx, wallet, payAmount });
   }
@@ -80,9 +86,7 @@ async function releaseCompletedDeferredBookingPayment(booking, tx, request) {
   try {
     if (booking.customerId?._id) {
       const customerWallet = await Wallet.findOne({ userId: booking.customerId._id }) || await Wallet.create({ userId: booking.customerId._id });
-      customerWallet.totalSpent = (customerWallet.totalSpent || 0) + amount;
-      customerWallet.lastUpdated = new Date();
-      await customerWallet.save();
+      await recordCustomerSpendStatsIfNeeded({ tx, wallet: customerWallet, amount });
     }
   } catch (e) {
     request.log?.warn?.('failed to update customer wallet for deferred completed booking', e?.message || e);
@@ -541,6 +545,15 @@ export async function paymentWebhook(request, reply) {
         if (transferCode) {
           const tx = await Transaction.findOne({ transferRef: transferCode });
           if (tx) {
+            if (!tx.payeeId && tx.bookingId) {
+              const booking = await Booking.findById(tx.bookingId).select('artisanId');
+              if (booking?.artisanId) tx.payeeId = booking.artisanId;
+            }
+            if (tx.payeeId) {
+              const payAmount = Number(tx.transferAmount || (Number(tx.amount || 0) - Number(tx.companyFee || 0)) || 0);
+              const wallet = await Wallet.findOne({ userId: tx.payeeId }) || await Wallet.create({ userId: tx.payeeId });
+              await recordArtisanPayoutStatsIfNeeded({ tx, wallet, payAmount });
+            }
             tx.transferStatus = 'success';
             tx.status = 'paid';
             await tx.save();

@@ -169,8 +169,11 @@ export async function creditArtisanWalletIfNeeded({ tx, wallet, payAmount }) {
       if (!freshWallet) throw new Error('Wallet not found during payout credit');
 
       freshWallet.balance = (freshWallet.balance || 0) + payAmount;
-      freshWallet.totalEarned = (freshWallet.totalEarned || 0) + payAmount;
-      freshWallet.totalJobs = (freshWallet.totalJobs || 0) + 1;
+      if (!freshTx.artisanStatsCreditedAt) {
+        freshWallet.totalEarned = (freshWallet.totalEarned || 0) + payAmount;
+        freshWallet.totalJobs = (freshWallet.totalJobs || 0) + 1;
+        freshTx.artisanStatsCreditedAt = new Date();
+      }
       freshWallet.lastUpdated = new Date();
       await freshWallet.save({ session });
 
@@ -179,9 +182,80 @@ export async function creditArtisanWalletIfNeeded({ tx, wallet, payAmount }) {
       await freshTx.save({ session });
 
       tx.internalWalletCreditedAt = freshTx.internalWalletCreditedAt;
+      tx.artisanStatsCreditedAt = freshTx.artisanStatsCreditedAt;
       tx.status = freshTx.status;
       wallet.balance = freshWallet.balance;
       wallet.totalEarned = freshWallet.totalEarned;
+      wallet.totalJobs = freshWallet.totalJobs;
+      wallet.lastUpdated = freshWallet.lastUpdated;
+      credited = true;
+    });
+
+    return credited;
+  } finally {
+    await session.endSession();
+  }
+}
+
+export async function recordArtisanPayoutStatsIfNeeded({ tx, wallet, payAmount }) {
+  if (!tx || tx.artisanStatsCreditedAt) return false;
+  const session = await mongoose.startSession();
+
+  try {
+    let credited = false;
+
+    await session.withTransaction(async () => {
+      const freshTx = await tx.constructor.findById(tx._id).session(session);
+      if (!freshTx || freshTx.artisanStatsCreditedAt) return;
+
+      const freshWallet = await wallet.constructor.findById(wallet._id).session(session);
+      if (!freshWallet) throw new Error('Wallet not found during payout stats update');
+
+      freshWallet.totalEarned = (freshWallet.totalEarned || 0) + payAmount;
+      freshWallet.totalJobs = (freshWallet.totalJobs || 0) + 1;
+      freshWallet.lastUpdated = new Date();
+      await freshWallet.save({ session });
+
+      freshTx.artisanStatsCreditedAt = new Date();
+      await freshTx.save({ session });
+
+      tx.artisanStatsCreditedAt = freshTx.artisanStatsCreditedAt;
+      wallet.totalEarned = freshWallet.totalEarned;
+      wallet.totalJobs = freshWallet.totalJobs;
+      wallet.lastUpdated = freshWallet.lastUpdated;
+      credited = true;
+    });
+
+    return credited;
+  } finally {
+    await session.endSession();
+  }
+}
+
+export async function recordCustomerSpendStatsIfNeeded({ tx, wallet, amount }) {
+  if (!tx || tx.customerStatsCreditedAt) return false;
+  const session = await mongoose.startSession();
+
+  try {
+    let credited = false;
+
+    await session.withTransaction(async () => {
+      const freshTx = await tx.constructor.findById(tx._id).session(session);
+      if (!freshTx || freshTx.customerStatsCreditedAt) return;
+
+      const freshWallet = await wallet.constructor.findById(wallet._id).session(session);
+      if (!freshWallet) throw new Error('Wallet not found during customer spend stats update');
+
+      freshWallet.totalSpent = (freshWallet.totalSpent || 0) + amount;
+      freshWallet.totalJobs = (freshWallet.totalJobs || 0) + 1;
+      freshWallet.lastUpdated = new Date();
+      await freshWallet.save({ session });
+
+      freshTx.customerStatsCreditedAt = new Date();
+      await freshTx.save({ session });
+
+      tx.customerStatsCreditedAt = freshTx.customerStatsCreditedAt;
+      wallet.totalSpent = freshWallet.totalSpent;
       wallet.totalJobs = freshWallet.totalJobs;
       wallet.lastUpdated = freshWallet.lastUpdated;
       credited = true;

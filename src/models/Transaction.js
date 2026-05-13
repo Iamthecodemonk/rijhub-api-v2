@@ -22,6 +22,8 @@ const transactionSchema = new mongoose.Schema({
   transferAmount: { type: Number },
   transferStatus: { type: String, enum: ['none','pending','processing','processed','queued','completed','success','failed'], default: 'none' },
   internalWalletCreditedAt: { type: Date },
+  artisanStatsCreditedAt: { type: Date },
+  customerStatsCreditedAt: { type: Date },
   createdAt: { type: Date, default: Date.now },
   releasedAt: Date,
 });

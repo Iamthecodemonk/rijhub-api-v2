@@ -10,7 +10,7 @@ import ArtisanService from '../models/ArtisanService.js';
 import JobSubCategory from '../models/JobSubCategory.js';
 import { sendSms as sendChampSms } from '../utils/sendchamp.js';
 import { normalizePaymentMode } from '../utils/paymentMode.js';
-import { attemptPaystackTransfer, creditArtisanWalletIfNeeded, ensurePaystackRecipient, getPayoutNotificationState, hasFinalizedPayout } from '../utils/payout.js';
+import { attemptPaystackTransfer, creditArtisanWalletIfNeeded, ensurePaystackRecipient, getPayoutNotificationState, hasFinalizedPayout, recordArtisanPayoutStatsIfNeeded, recordCustomerSpendStatsIfNeeded } from '../utils/payout.js';
 import { getPaystackCallbackUrl } from '../utils/paystack.js';
 import { formatNotificationDate, formatNotificationMoney } from '../utils/notificationText.js';
 
@@ -900,8 +900,12 @@ export async function completeBooking(request, reply) {
       } catch (e) {
         request.log?.error?.('Failed to read COMPANY_FEE_PCT from config', e?.message || e);
       }
-      const fee = Math.round((tx.amount * feePct) / 100 * 100) / 100;
-      const payAmount = tx.amount - fee;
+      const amount = Number(tx.amount || booking.price || 0);
+      const fee = Math.round((amount * feePct) / 100 * 100) / 100;
+      const payAmount = Math.round((amount - fee) * 100) / 100;
+      tx.payerId = booking.customerId._id;
+      tx.payeeId = booking.artisanId._id;
+      tx.amount = amount;
       tx.companyFee = fee;
       tx.status = 'released';
       tx.releasedAt = tx.releasedAt || new Date();
@@ -928,8 +932,11 @@ export async function completeBooking(request, reply) {
 
       // If not using auto-payout or auto-payout failed, credit internal artisan wallet
       if (transferResult.finalized && transferResult.succeeded) {
+        await recordArtisanPayoutStatsIfNeeded({ tx, wallet, payAmount });
         tx.status = 'paid';
         await tx.save();
+      } else if (transferResult.inFlight) {
+        await recordArtisanPayoutStatsIfNeeded({ tx, wallet, payAmount });
       } else if (!autoPayout || !transferResult.attempted || (transferResult.attempted && !transferResult.succeeded && !transferResult.inFlight)) {
         await creditArtisanWalletIfNeeded({ tx, wallet, payAmount });
       }
@@ -1009,9 +1016,7 @@ export async function completeBooking(request, reply) {
       if (tx) {
         let customerWallet = await Wallet.findOne({ userId: booking.customerId._id });
         if (!customerWallet) customerWallet = await Wallet.create({ userId: booking.customerId._id });
-        customerWallet.totalSpent = (customerWallet.totalSpent || 0) + (tx.amount || 0);
-        customerWallet.lastUpdated = new Date();
-        await customerWallet.save();
+        await recordCustomerSpendStatsIfNeeded({ tx, wallet: customerWallet, amount: Number(tx.amount || 0) });
       }
     } catch (e) {
       request.log?.warn?.('failed to update customer wallet', e?.message || e);
