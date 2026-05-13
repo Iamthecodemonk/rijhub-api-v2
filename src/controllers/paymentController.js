@@ -135,6 +135,35 @@ export async function resolvePaystackAccount(request, reply) {
   }
 }
 
+export async function getCompanyCommission(request, reply) {
+  try {
+    const cfgVal = await getConfig('COMPANY_FEE_PCT');
+    const percentage = cfgVal !== null && !isNaN(Number(cfgVal)) ? Number(cfgVal) : 0;
+    const amount = request.query?.amount !== undefined ? Number(request.query.amount) : null;
+
+    const data = {
+      key: 'COMPANY_FEE_PCT',
+      percentage,
+    };
+
+    if (amount !== null) {
+      if (!Number.isFinite(amount) || amount < 0) {
+        return reply.code(400).send({ success: false, message: 'amount must be a valid number greater than or equal to 0' });
+      }
+
+      const companyFee = Math.round((amount * percentage) / 100 * 100) / 100;
+      data.amount = amount;
+      data.companyFee = companyFee;
+      data.transferAmount = Math.round((amount - companyFee) * 100) / 100;
+    }
+
+    return reply.send({ success: true, data });
+  } catch (err) {
+    request.log?.error?.('getCompanyCommission failed', err?.message || err);
+    return reply.code(500).send({ success: false, message: 'Failed to get company commission' });
+  }
+}
+
 // Create a transaction record (payment intent or completed depending on your flow)
 export async function createPayment(request, reply) {
   try {
