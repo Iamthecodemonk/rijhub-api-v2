@@ -853,7 +853,10 @@ export async function completeBooking(request, reply) {
     }
 
     if (booking.paymentMode === 'afterCompletion') {
-      const paidTx = await Transaction.findOne({ bookingId: booking._id, status: 'holding' });
+      const paidTx = await Transaction.findOne({
+        bookingId: booking._id,
+        status: { $in: ['holding', 'released', 'paid'] },
+      });
       if (!paidTx) {
         return reply.code(400).send({
           success: false,
@@ -869,7 +872,10 @@ export async function completeBooking(request, reply) {
 
     // If payment has already been initialized but webhook/verification has not updated the transaction,
     // attempt to verify any pending Paystack transaction before release.
-    let tx = await Transaction.findOne({ bookingId: booking._id, status: 'holding' });
+    let tx = await Transaction.findOne({
+      bookingId: booking._id,
+      status: { $in: ['holding', 'released', 'paid'] },
+    }).sort({ createdAt: -1 });
     if (!tx && booking.paymentMode === 'afterCompletion' && process.env.PAYSTACK_SECRET_KEY) {
       const pendingTx = await Transaction.findOne({ bookingId: booking._id, status: 'pending', paymentGatewayRef: { $exists: true, $ne: null } });
       if (pendingTx) {
@@ -907,6 +913,7 @@ export async function completeBooking(request, reply) {
       tx.payeeId = booking.artisanId._id;
       tx.amount = amount;
       tx.companyFee = fee;
+      tx.transferAmount = payAmount;
       tx.status = 'released';
       tx.releasedAt = tx.releasedAt || new Date();
       await tx.save();

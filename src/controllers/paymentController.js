@@ -15,8 +15,13 @@ import { formatNotificationMoney } from '../utils/notificationText.js';
 import crypto from 'crypto';
 import axios from 'axios';
 
+function markTransactionHoldingIfUnreleased(tx) {
+  if (!tx || hasFinalizedPayout(tx) || tx.transferRef || tx.status === 'released') return;
+  tx.status = 'holding';
+}
+
 async function releaseCompletedDeferredBookingPayment(booking, tx, request) {
-  if (!booking || !tx || booking.paymentMode !== 'afterCompletion' || booking.status !== 'completed') return;
+  if (!booking || !tx) return;
   if (hasFinalizedPayout(tx) || tx.transferRef) return;
   if (tx.status !== 'holding' && tx.status !== 'released') return;
   const amount = Number(tx.amount || booking.price || 0);
@@ -33,6 +38,7 @@ async function releaseCompletedDeferredBookingPayment(booking, tx, request) {
   tx.payeeId = booking.artisanId._id;
   tx.amount = amount;
   tx.companyFee = fee;
+  tx.transferAmount = payAmount;
   tx.status = 'released';
   tx.releasedAt = tx.releasedAt || new Date();
   await tx.save();
@@ -225,7 +231,7 @@ export async function verifyPayment(request, reply) {
 
         if (success) {
           // mark tx holding and perform booking/quote actions (idempotent)
-          tx.status = 'holding';
+          markTransactionHoldingIfUnreleased(tx);
           await tx.save();
 
           // Prefer explicit bookingId in metadata (direct-hire / booking-first flows)
@@ -282,7 +288,7 @@ export async function verifyPayment(request, reply) {
                 const ref = res.data.data?.reference;
                 if (ref) {
                   const tx2 = await Transaction.findOne({ paymentGatewayRef: ref });
-                  if (tx2) { tx2.bookingId = booking._id; tx2.status = 'holding'; await tx2.save(); }
+                  if (tx2) { tx2.bookingId = booking._id; markTransactionHoldingIfUnreleased(tx2); await tx2.save(); }
                 }
               }
             } catch (e) {
@@ -326,7 +332,7 @@ export async function verifyPayment(request, reply) {
                   const ref = res.data.data?.reference;
                   if (ref) {
                     const tx2 = await Transaction.findOne({ paymentGatewayRef: ref });
-                    if (tx2) { tx2.bookingId = created._id; tx2.status = 'holding'; await tx2.save(); }
+                    if (tx2) { tx2.bookingId = created._id; markTransactionHoldingIfUnreleased(tx2); await tx2.save(); }
                   }
                 }
               }
@@ -348,7 +354,7 @@ export async function verifyPayment(request, reply) {
               tx.payerId = booking.customerId?._id || booking.customerId || tx.payerId || null;
               tx.payeeId = booking.artisanId?._id || booking.artisanId || tx.payeeId || null;
               tx.amount = Number(booking.price || tx.amount || 0);
-              tx.status = 'holding';
+              markTransactionHoldingIfUnreleased(tx);
               await tx.save();
 
               if (!booking.chatId) {
@@ -357,9 +363,7 @@ export async function verifyPayment(request, reply) {
                 await booking.save();
               }
 
-              if (booking.status === 'completed' && booking.paymentMode === 'afterCompletion') {
-                await releaseCompletedDeferredBookingPayment(booking, tx, request);
-              }
+              await releaseCompletedDeferredBookingPayment(booking, tx, request);
 
               const bookingName = booking?.service || 'your booking';
               await createNotification(request.server, booking.artisanId._id, { type: 'booking', title: 'New booking confirmed', body: `${bookingName} has been paid.`, data: { bookingId: booking._id, bookingName, chatId: booking.chatId, email: booking.artisanId?.email, sendEmail: true } });
@@ -490,7 +494,7 @@ export async function paymentWebhook(request, reply) {
                 const tx = await Transaction.findOne({ paymentGatewayRef: ref });
                 if (tx) {
                   tx.bookingId = booking?._id || existingBooking?._id;
-                  tx.status = 'holding';
+                  markTransactionHoldingIfUnreleased(tx);
                   await tx.save();
                 }
               }
@@ -531,7 +535,7 @@ export async function paymentWebhook(request, reply) {
                 const ref = payload.data?.reference;
                 if (ref) {
                   const tx = await Transaction.findOne({ paymentGatewayRef: ref });
-                  if (tx) { tx.bookingId = created._id; tx.status = 'holding'; await tx.save(); }
+                  if (tx) { tx.bookingId = created._id; markTransactionHoldingIfUnreleased(tx); await tx.save(); }
                 }
               }
             }
@@ -656,14 +660,12 @@ export async function paymentWebhook(request, reply) {
         tx.payerId = booking.customerId._id;
         tx.payeeId = booking.artisanId._id;
         tx.amount = booking.price || tx.amount || 0;
-        tx.status = 'holding';
+        markTransactionHoldingIfUnreleased(tx);
         await tx.save();
       } else {
         tx = await Transaction.create({ bookingId: booking._id, payerId: booking.customerId._id, payeeId: booking.artisanId._id, amount: booking.price || 0, status: 'holding', paymentGatewayRef: _g });
       }
-      if (booking.status === 'completed' && booking.paymentMode === 'afterCompletion') {
-        await releaseCompletedDeferredBookingPayment(booking, tx, request);
-      }
+      await releaseCompletedDeferredBookingPayment(booking, tx, request);
 
       // notify artisan
       const bookingName = booking?.service || 'your booking';
@@ -702,7 +704,7 @@ const reconcilePendingQuoteTransactions = async (request, reply) => {
           if (!quote) { results.push({ tx: tx._id, ok: false, reason: 'quote-not-found' }); continue; }
           const existingBooking = await Booking.findOne({ acceptedQuote: quote._id });
           if (existingBooking) {
-            tx.bookingId = existingBooking._id; tx.status = 'holding'; await tx.save();
+            tx.bookingId = existingBooking._id; markTransactionHoldingIfUnreleased(tx); await tx.save();
             results.push({ tx: tx._id, ok: true, booking: existingBooking._id, reused: true });
             continue;
           }
@@ -720,7 +722,7 @@ const reconcilePendingQuoteTransactions = async (request, reply) => {
             // non-fatal
             request.log?.warn?.('reconcile: failed to update job status after creating booking', e?.message || e);
           }
-          tx.bookingId = booking._id; tx.status = 'holding'; tx.save().catch(() => { });
+          tx.bookingId = booking._id; markTransactionHoldingIfUnreleased(tx); tx.save().catch(() => { });
           results.push({ tx: tx._id, ok: true, booking: booking._id, created: true });
         } else {
           results.push({ tx: tx._id, ok: false, reason: 'no-quote-in-metadata' });
