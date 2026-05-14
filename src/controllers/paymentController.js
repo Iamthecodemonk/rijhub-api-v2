@@ -22,7 +22,31 @@ function markTransactionHoldingIfUnreleased(tx) {
 
 async function releaseCompletedDeferredBookingPayment(booking, tx, request) {
   if (!booking || !tx) return;
-  if (hasFinalizedPayout(tx) || tx.transferRef) return;
+  if (hasFinalizedPayout(tx) || tx.transferRef) {
+    try {
+      const amount = Number(tx.amount || booking.price || 0);
+      const fee = Number(tx.companyFee || 0);
+      const payAmount = Math.round(Number(tx.transferAmount || (amount - fee)) * 100) / 100;
+      tx.payerId = tx.payerId || booking.customerId._id;
+      tx.payeeId = tx.payeeId || booking.artisanId._id;
+      tx.amount = amount;
+      tx.transferAmount = tx.transferAmount || payAmount;
+      await tx.save();
+
+      if (tx.payeeId && !tx.artisanStatsCreditedAt) {
+        const wallet = await Wallet.findOne({ userId: tx.payeeId }) || await Wallet.create({ userId: tx.payeeId });
+        await recordArtisanPayoutStatsIfNeeded({ tx, wallet, payAmount });
+      }
+      if (tx.payerId && !tx.customerStatsCreditedAt) {
+        const customerWallet = await Wallet.findOne({ userId: tx.payerId }) || await Wallet.create({ userId: tx.payerId });
+        await recordCustomerSpendStatsIfNeeded({ tx, wallet: customerWallet, amount });
+      }
+      request.log?.info?.({ bookingId: String(booking._id), transactionId: String(tx._id), payAmount, amount }, 'finalized deferred booking stats ensured');
+    } catch (e) {
+      request.log?.warn?.('failed to ensure stats for finalized deferred booking', e?.message || e);
+    }
+    return;
+  }
   if (tx.status !== 'holding' && tx.status !== 'released') return;
   const amount = Number(tx.amount || booking.price || 0);
   let feePct = 0;

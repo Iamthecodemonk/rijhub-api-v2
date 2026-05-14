@@ -88,6 +88,73 @@ function parseSchedule(input) {
   }
 }
 
+async function ensureCompletedPaidBookingStats({ booking, request }) {
+  if (!booking || booking.status !== 'completed' || booking.paymentStatus !== 'paid') {
+    return { updated: false, reason: 'booking_not_completed_paid' };
+  }
+
+  const customerId = booking.customerId?._id || booking.customerId;
+  const artisanId = booking.artisanId?._id || booking.artisanId;
+  const amount = Number(booking.price || 0);
+  if (!customerId || !artisanId || amount <= 0) {
+    return { updated: false, reason: 'missing_booking_parties_or_amount' };
+  }
+
+  let tx = await Transaction.findOne({ bookingId: booking._id }).sort({ createdAt: -1 });
+  let feePct = 0;
+  try {
+    const cfgVal = await getConfig('COMPANY_FEE_PCT');
+    if (cfgVal !== null && !isNaN(Number(cfgVal))) feePct = Number(cfgVal);
+  } catch (e) {
+    request.log?.warn?.('Failed to read COMPANY_FEE_PCT while repairing booking stats', e?.message || e);
+  }
+
+  const existingFee = tx && tx.companyFee !== undefined && tx.companyFee !== null ? Number(tx.companyFee) : null;
+  const fee = existingFee !== null && Number.isFinite(existingFee) ? existingFee : Math.round((amount * feePct) / 100 * 100) / 100;
+  const payAmount = Math.round(Number(tx?.transferAmount || (amount - fee)) * 100) / 100;
+
+  if (!tx) {
+    tx = await Transaction.create({
+      bookingId: booking._id,
+      payerId: customerId,
+      payeeId: artisanId,
+      amount,
+      companyFee: fee,
+      transferAmount: payAmount,
+      status: 'paid',
+      transferStatus: 'success',
+      releasedAt: new Date(),
+    });
+    request.log?.warn?.({ bookingId: String(booking._id), transactionId: String(tx._id) }, 'created reconciliation transaction for completed paid booking');
+  } else {
+    tx.payerId = tx.payerId || customerId;
+    tx.payeeId = tx.payeeId || artisanId;
+    tx.amount = Number(tx.amount || amount);
+    tx.companyFee = Number(tx.companyFee || fee);
+    tx.transferAmount = Number(tx.transferAmount || payAmount);
+    if (tx.status === 'pending') tx.status = 'paid';
+    await tx.save();
+  }
+
+  const artisanWallet = await Wallet.findOne({ userId: artisanId }) || await Wallet.create({ userId: artisanId });
+  const customerWallet = await Wallet.findOne({ userId: customerId }) || await Wallet.create({ userId: customerId });
+  const artisanUpdated = await recordArtisanPayoutStatsIfNeeded({ tx, wallet: artisanWallet, payAmount });
+  const customerUpdated = await recordCustomerSpendStatsIfNeeded({ tx, wallet: customerWallet, amount: Number(tx.amount || amount) });
+
+  request.log?.info?.({
+    bookingId: String(booking._id),
+    transactionId: String(tx._id),
+    artisanId: String(artisanId),
+    customerId: String(customerId),
+    payAmount,
+    amount: Number(tx.amount || amount),
+    artisanUpdated,
+    customerUpdated,
+  }, 'completed paid booking stats ensured');
+
+  return { updated: artisanUpdated || customerUpdated, artisanUpdated, customerUpdated, transactionId: tx._id };
+}
+
 function applyDirectBookingState(payload, paymentMode) {
   if (paymentMode === 'afterCompletion') {
     payload.paymentMode = 'afterCompletion';
@@ -843,6 +910,13 @@ export async function completeBooking(request, reply) {
     if (!booking) return reply.code(404).send({ success: false, message: 'Not found' });
     if (String(booking.customerId._id) !== String(request.user?.id)) return reply.code(403).send({ success: false, message: 'Forbidden' });
     if (booking.status === 'completed' || booking.status === 'closed') {
+      if (booking.status === 'completed' && booking.paymentStatus === 'paid') {
+        try {
+          await ensureCompletedPaidBookingStats({ booking, request });
+        } catch (e) {
+          request.log?.warn?.('failed to ensure already-completed booking wallet stats', e?.message || e);
+        }
+      }
       return reply.send({ success: true, message: 'Booking already completed', data: booking });
     }
     if (!['in-progress', 'accepted'].includes(booking.status)) {
