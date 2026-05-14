@@ -11,7 +11,21 @@ export async function listNotifications(request, reply) {
 
     const total = await Notification.countDocuments(q);
     const notifs = await Notification.find(q).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(Number(limit));
-    return reply.send({ success: true, data: notifs, meta: { page: Number(page), limit: Number(limit), total } });
+    request.log?.info?.({
+      userId,
+      unread,
+      page: Number(page),
+      limit: Number(limit),
+      total,
+      returned: notifs.length,
+      firstNotificationId: notifs[0]?._id ? String(notifs[0]._id) : null,
+    }, 'notifications:list:result');
+    return reply.send({
+      success: true,
+      data: notifs,
+      notifications: notifs,
+      meta: { page: Number(page), limit: Number(limit), total },
+    });
   } catch (err) {
     request.log?.error?.(err);
     return reply.code(500).send({ success: false, message: 'Failed to list notifications' });
@@ -26,6 +40,7 @@ export async function getNotificationsCount(request, reply) {
     const q = { userId };
     if (unreadOnly) q.read = false;
     const count = await Notification.countDocuments(q);
+    request.log?.info?.({ userId, unreadOnly, count }, 'notifications:count:result');
     return reply.send({ success: true, count });
   } catch (err) {
     request.log?.error?.(err);

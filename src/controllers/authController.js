@@ -874,6 +874,8 @@ export const googleCallback = async (req, reply) => {
   try {
     const idToken = req.body?.idToken || req.body?.id_token;
     const role = req.body?.role;
+    const deviceToken = req.body?.deviceToken || req.body?.fcmToken || req.body?.notificationToken || req.body?.token;
+    const platform = req.body?.platform || req.body?.devicePlatform || null;
     if (!idToken) return reply.code(400).send({ message: 'idToken required (body.idToken or body.id_token)' });
 
     let ticket;
@@ -931,6 +933,16 @@ export const googleCallback = async (req, reply) => {
       } catch (e) {
         req.log?.warn?.('oauth role update failed', e?.message || e);
       }
+      try {
+        if (deviceToken) {
+          await DeviceToken.updateOne({ token: deviceToken }, { $set: { userId: user._id, platform, updatedAt: new Date() } }, { upsert: true });
+          req.log?.info?.({ userId: String(user._id), platform, tokenPrefix: String(deviceToken).slice(0, 12) }, 'google oauth:device_token_saved');
+        } else {
+          req.log?.warn?.({ userId: String(user._id) }, 'google oauth:device_token_missing');
+        }
+      } catch (dtErr) {
+        req.log?.warn?.('google oauth device token save failed', dtErr?.message || dtErr);
+      }
     } else {
       user = await User.create({
         name,
@@ -940,14 +952,27 @@ export const googleCallback = async (req, reply) => {
         role: finalRole,
         profileImage: picture ? { url: picture, public_id: '' } : {},
       });
+      req.log?.info?.({ userId: String(user._id), email: user.email, role: user.role }, 'google oauth:user_created');
+      try {
+        if (deviceToken) {
+          await DeviceToken.updateOne({ token: deviceToken }, { $set: { userId: user._id, platform, updatedAt: new Date() } }, { upsert: true });
+          req.log?.info?.({ userId: String(user._id), platform, tokenPrefix: String(deviceToken).slice(0, 12) }, 'google oauth:device_token_saved');
+        } else {
+          req.log?.warn?.({ userId: String(user._id) }, 'google oauth:device_token_missing');
+        }
+      } catch (dtErr) {
+        req.log?.warn?.('google oauth device token save failed', dtErr?.message || dtErr);
+      }
       // Send welcome notification/email for newly created OAuth users
       try {
+        req.log?.info?.({ userId: String(user._id), email: user.email }, 'google oauth:welcome_notification_start');
         await createNotification(req.server, user._id, {
           type: 'welcome',
           title: 'Welcome to RijHub',
           body: `Welcome ${user.name || 'there'}! Your account has been created successfully via Google OAuth.`,
           data: { sendEmail: true, email: user.email }
         });
+        req.log?.info?.({ userId: String(user._id), email: user.email }, 'google oauth:welcome_notification_done');
       } catch (e) {
         req.log?.warn?.('oauth welcome notification failed', e?.message || e);
       }
