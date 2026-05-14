@@ -60,13 +60,20 @@ export async function createNotification(fastify, userId, { type, title, body, d
       const to = data.email || data.to;
       if (to) {
         fastify?.log?.info?.({ notificationId: String(n._id), to, subject: title }, 'notification:email:sending');
-        await transporter.sendMail({
+        const info = await transporter.sendMail({
           from: process.env.SMTP_FROM || 'no-reply@example.com',
           to,
           subject: title,
           text: body,
         });
-        fastify?.log?.info?.({ notificationId: String(n._id), to }, 'notification:email:sent');
+        fastify?.log?.info?.({
+          notificationId: String(n._id),
+          to,
+          messageId: info?.messageId,
+          accepted: info?.accepted,
+          rejected: info?.rejected,
+          response: info?.response,
+        }, 'notification:email:sent');
       } else {
         fastify?.log?.warn?.({ notificationId: String(n._id), dataKeys: Object.keys(data || {}) }, 'notification:email:skipped_missing_recipient');
       }
@@ -193,8 +200,14 @@ export async function sendPasswordResetEmail(fastify, email, resetToken, userNam
       `
     };
 
-        await transporter.sendMail(mailOptions);
-        fastify?.log?.info?.({ email }, 'Password reset email sent successfully');
+        const info = await transporter.sendMail(mailOptions);
+        fastify?.log?.info?.({
+          email,
+          messageId: info?.messageId,
+          accepted: info?.accepted,
+          rejected: info?.rejected,
+          response: info?.response,
+        }, 'Password reset email sent successfully');
     
     return { success: true, message: 'Password reset email sent' };
   } catch (err) {
@@ -218,8 +231,15 @@ export async function sendEmail(fastify, to, subject, html, text) {
       html: html || text || '',
       text: text || (html ? html.replace(/<[^>]*>/g, '') : ''),
     };
-    await transporter.sendMail(mailOptions);
-    return { success: true };
+    const info = await transporter.sendMail(mailOptions);
+    fastify?.log?.info?.({
+      to,
+      messageId: info?.messageId,
+      accepted: info?.accepted,
+      rejected: info?.rejected,
+      response: info?.response,
+    }, 'sendEmail sent successfully');
+    return { success: true, messageId: info?.messageId, accepted: info?.accepted, rejected: info?.rejected, response: info?.response };
   } catch (err) {
     fastify?.log?.error?.({ to, err }, 'sendEmail failed');
     return { success: false, message: err?.message || String(err) };
