@@ -267,9 +267,9 @@ export const registerUser = async (req, reply) => {
       if (phone) {
         // Send the OTP in the background so we don't block the registration response
         (async () => {
+          let provider = (process.env.OTP_PROVIDER || (process.env.SENDCHAMP_API_KEY ? 'sendchamp' : 'email')).toLowerCase();
           try {
             // Build provider options. When using SendChamp we allow switching to WhatsApp templates
-            const provider = (process.env.OTP_PROVIDER || (process.env.SENDCHAMP_API_KEY ? 'sendchamp' : 'email')).toLowerCase();
             const options = { ttl: 15 * 60 };
             if (provider === 'sendchamp') {
               const useSms = String(process.env.SENDCHAMP_USE_SMS || 'true').toLowerCase() === 'true';
@@ -291,6 +291,21 @@ export const registerUser = async (req, reply) => {
               await RegistrationOtp.findOneAndUpdate({ email: normalizedEmail }, { delivered: bgDelivered }, { upsert: false });
             } catch (persistErr) {
               req.log?.warn?.('failed to persist otp delivered meta', persistErr?.message || persistErr);
+            }
+
+            try {
+              const emailRes = await sendEmail(req.server, normalizedEmail, subject, html, text);
+              if (emailRes && emailRes.success === true) {
+                await RegistrationOtp.findOneAndUpdate(
+                  { email: normalizedEmail },
+                  { delivered: { method: 'email', result: emailRes, timestamp: new Date(), alsoSentVia: bgDelivered } },
+                  { upsert: false }
+                );
+              } else {
+                req.log?.warn?.({ email: normalizedEmail, result: emailRes }, 'registration OTP email send failed');
+              }
+            } catch (emailErr) {
+              req.log?.warn?.('registration OTP email send failed', emailErr?.message || emailErr);
             }
 
             // If provider returned non-success (use explicit success flag), attempt email fallback
@@ -581,8 +596,8 @@ export const resendOtp = async (req, reply) => {
     let deliveredMeta = null;
     if (targetPhone) {
       (async () => {
+        let provider = (process.env.OTP_PROVIDER || (process.env.SENDCHAMP_API_KEY ? 'sendchamp' : 'email')).toLowerCase();
         try {
-          const provider = (process.env.OTP_PROVIDER || (process.env.SENDCHAMP_API_KEY ? 'sendchamp' : 'email')).toLowerCase();
           const options = { ttl: 15 * 60 };
           if (provider === 'sendchamp') {
             const useSms = String(process.env.SENDCHAMP_USE_SMS || 'true').toLowerCase() === 'true';
@@ -599,6 +614,21 @@ export const resendOtp = async (req, reply) => {
           const methodName = provider === 'sendchamp' ? (options.channel === 'whatsapp' ? 'sendchamp_whatsapp' : 'sendchamp_otp') : provider;
           deliveredMeta = { method: methodName, result: otpRes, timestamp: new Date() };
           try { await RegistrationOtp.findOneAndUpdate({ email: normalizedEmail }, { delivered: deliveredMeta }, { upsert: false }); } catch (e) { req.log?.warn?.('failed to persist delivered meta', e?.message || e); }
+
+          try {
+            const emailRes = await sendEmail(req.server, normalizedEmail, subject, html, text);
+            if (emailRes && emailRes.success === true) {
+              await RegistrationOtp.findOneAndUpdate(
+                { email: normalizedEmail },
+                { delivered: { method: 'email', result: emailRes, timestamp: new Date(), alsoSentVia: deliveredMeta } },
+                { upsert: false }
+              );
+            } else {
+              req.log?.warn?.({ email: normalizedEmail, result: emailRes }, 'resend OTP email send failed');
+            }
+          } catch (emailErr) {
+            req.log?.warn?.('resend OTP email send failed', emailErr?.message || emailErr);
+          }
 
           if (!(otpRes && otpRes.success === true)) {
             // fallback to email

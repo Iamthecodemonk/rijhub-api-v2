@@ -8,9 +8,9 @@ let transporter = null;
 let transporterInitAttempted = false;
 
 async function initTransporter(fastify) {
-  if (transporterInitAttempted) return;
+  if (transporter) return transporter;
   transporterInitAttempted = true;
-  if (!process.env.SMTP_HOST) return;
+  if (!process.env.SMTP_HOST) return null;
   try {
     const mod = await import('nodemailer');
     const nodemailer = mod?.default || mod;
@@ -23,9 +23,13 @@ async function initTransporter(fastify) {
         user: process.env.SMTP_USER, pass: process.env.SMTP_PASS 
       } : undefined,
     });
+    return transporter;
   } catch (err) {
     // nodemailer not installed or failed to import — log and continue without email
+    transporter = null;
+    transporterInitAttempted = false;
     fastify?.log?.warn?.('nodemailer not available; email notifications disabled');
+    return null;
   }
 }
 
@@ -46,7 +50,7 @@ export async function createNotification(fastify, userId, { type, title, body, d
   // optional email
   try {
     // lazy initialize transporter if needed
-    if (!transporter && !transporterInitAttempted) await initTransporter(fastify);
+    if (!transporter) await initTransporter(fastify);
     if (transporter && data?.sendEmail) {
       const to = data.email || data.to;
       if (to) {
@@ -97,8 +101,7 @@ export async function createNotification(fastify, userId, { type, title, body, d
 export async function sendPasswordResetEmail(fastify, email, resetToken, userName = 'User') {
   try {
     // Initialize transporter if needed
-    if (!transporter && !transporterInitAttempted) 
-      await initTransporter(fastify);
+    if (!transporter) await initTransporter(fastify);
     
     if (!transporter) {
       fastify?.log?.warn?.('Email transport not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS in .env');
@@ -184,7 +187,7 @@ export async function sendPasswordResetEmail(fastify, email, resetToken, userNam
 // Generic email sender
 export async function sendEmail(fastify, to, subject, html, text) {
   try {
-    if (!transporter && !transporterInitAttempted) await initTransporter(fastify);
+    if (!transporter) await initTransporter(fastify);
     if (!transporter) {
       fastify?.log?.warn?.('Email transport not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS in .env');
       return { success: false, message: 'Email service not configured' };

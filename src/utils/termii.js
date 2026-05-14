@@ -1,12 +1,12 @@
 import axios from 'axios';
 
 const API_BASE = 'https://v3.api.termii.com';
-const API_KEY = process.env.TERMII_API_KEY;
 
 /**
  * Sends an OTP via Termii.
  */
 async function sendOtp(to, code, options = {}) {
+  const API_KEY = process.env.TERMII_API_KEY;
   if (!API_KEY) return { success: false, error: 'termii_api_key_missing' };
   // support both sendOtp(to, options) and sendOtp(to, code, options)
   if (typeof code === 'object') {
@@ -86,6 +86,7 @@ async function sendOtp(to, code, options = {}) {
  * Verifies the OTP entered by the user.
  */
 async function verifyOtp(pinId, code) {
+  const API_KEY = process.env.TERMII_API_KEY;
   if (!API_KEY) return { success: false, error: 'termii_api_key_missing' };
 
   try {
