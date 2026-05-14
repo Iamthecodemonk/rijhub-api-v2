@@ -37,11 +37,16 @@ export async function createNotification(fastify, userId, { type, title, body, d
   // Normalize userId so callers may pass populated objects or raw ids
   const uid = (userId && (userId._id || userId.id)) ? (userId._id || userId.id) : userId;
   const uidStr = uid ? String(uid) : uid;
+  fastify?.log?.info?.({ userId: uidStr, type, title, sendEmail: !!data?.sendEmail }, 'notification:create:start');
   const n = await Notification.create({ userId: uidStr, type, title, body, data });
+  fastify?.log?.info?.({ notificationId: String(n._id), userId: uidStr, type }, 'notification:create:in_app_saved');
   // try emitting over websocket/socket if available
   try {
     if (fastify && fastify.io && uidStr) {
       fastify.io.to(uidStr).emit('notification', n);
+      fastify?.log?.info?.({ notificationId: String(n._id), userId: uidStr }, 'notification:socket:emitted');
+    } else {
+      fastify?.log?.debug?.({ notificationId: String(n._id), hasFastify: !!fastify, hasIo: !!fastify?.io, userId: uidStr }, 'notification:socket:skipped');
     }
   } catch (e) {
     fastify?.log?.error?.('socket emit failed', e?.message);
@@ -54,13 +59,21 @@ export async function createNotification(fastify, userId, { type, title, body, d
     if (transporter && data?.sendEmail) {
       const to = data.email || data.to;
       if (to) {
+        fastify?.log?.info?.({ notificationId: String(n._id), to, subject: title }, 'notification:email:sending');
         await transporter.sendMail({
           from: process.env.SMTP_FROM || 'no-reply@example.com',
           to,
           subject: title,
           text: body,
         });
+        fastify?.log?.info?.({ notificationId: String(n._id), to }, 'notification:email:sent');
+      } else {
+        fastify?.log?.warn?.({ notificationId: String(n._id), dataKeys: Object.keys(data || {}) }, 'notification:email:skipped_missing_recipient');
       }
+    } else if (data?.sendEmail) {
+      fastify?.log?.warn?.({ notificationId: String(n._id), smtpHostConfigured: !!process.env.SMTP_HOST }, 'notification:email:skipped_no_transporter');
+    } else {
+      fastify?.log?.debug?.({ notificationId: String(n._id) }, 'notification:email:skipped_not_requested');
     }
   } catch (e) {
     fastify?.log?.error?.({ err: e, message: e?.message, stack: e?.stack }, 'sendMail failed');
@@ -73,6 +86,7 @@ export async function createNotification(fastify, userId, { type, title, body, d
     if (admin) {
       const tokens = (await DeviceToken.find({ userId: uidStr }).lean()).map(d => d.token).filter(Boolean);
       if (tokens.length) {
+        fastify?.log?.info?.({ notificationId: String(n._id), userId: uidStr, tokenCount: tokens.length }, 'notification:fcm:sending');
         // build individual messages per token and use sendAll (sendMulticast deprecated)
         const perTokenData = Object.keys(data || {}).reduce((acc, k) => { acc[k] = String(data[k]); return acc; }, {});
         const messages = tokens.map(t => ({ notification: { title: title || '', body: body || '' }, data: perTokenData, token: t }));
@@ -88,7 +102,12 @@ export async function createNotification(fastify, userId, { type, title, body, d
         if (failures.length) {
           try { await DeviceToken.deleteMany({ token: { $in: failures } }); } catch (e) { fastify?.log?.warn?.('failed to cleanup device tokens', e?.message); }
         }
+        fastify?.log?.info?.({ notificationId: String(n._id), userId: uidStr, tokenCount: tokens.length, failureCount: failures.length }, 'notification:fcm:done');
+      } else {
+        fastify?.log?.debug?.({ notificationId: String(n._id), userId: uidStr }, 'notification:fcm:skipped_no_tokens');
       }
+    } else {
+      fastify?.log?.warn?.({ notificationId: String(n._id), firebaseConfigured: false }, 'notification:fcm:skipped_firebase_not_configured');
     }
   } catch (e) {
     fastify?.log?.warn?.('fcm send failed', e?.message || e);

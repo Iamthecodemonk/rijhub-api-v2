@@ -204,6 +204,7 @@ export const registerUser = async (req, reply) => {
     // If Google OAuth registration, create the user immediately
     if (googleId) {
       const user = await User.create(userPayload);
+      req.log?.info?.({ userId: String(user._id), email: user.email, role: user.role }, 'google registration:user_created');
 
       // Auto-register device token if supplied in the request (mobile clients)
       try {
@@ -211,6 +212,9 @@ export const registerUser = async (req, reply) => {
         const platform = req.body?.platform || req.body?.devicePlatform || null;
         if (deviceToken) {
           await DeviceToken.updateOne({ token: deviceToken }, { $set: { userId: user._id, platform, updatedAt: new Date() } }, { upsert: true });
+          req.log?.info?.({ userId: String(user._id), platform, tokenPrefix: String(deviceToken).slice(0, 12) }, 'google registration:device_token_saved');
+        } else {
+          req.log?.warn?.({ userId: String(user._id) }, 'google registration:device_token_missing');
         }
       } catch (dtErr) {
         req.log?.warn?.('device token auto-register failed', dtErr?.message || dtErr);
@@ -222,12 +226,14 @@ export const registerUser = async (req, reply) => {
 
       // Send welcome notification and email (if SMTP configured)
       try {
+        req.log?.info?.({ userId: String(user._id), email: user.email }, 'google registration:welcome_notification_start');
         await createNotification(req.server, user._id, {
           type: 'welcome',
           title: 'Welcome to RijHub',
           body: `Welcome ${user.name || 'there'}! Your account has been created successfully.`,
           data: { sendEmail: true, email: user.email }
         });
+        req.log?.info?.({ userId: String(user._id), email: user.email }, 'google registration:welcome_notification_done');
       } catch (notifErr) {
         req.log?.warn?.('welcome notification failed', notifErr?.message || notifErr);
       }
