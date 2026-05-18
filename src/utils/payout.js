@@ -146,6 +146,8 @@ export async function attemptPaystackTransfer({ tx, booking, payAmount, recipien
 
     if (tRes?.data?.status !== true) {
       tx.transferStatus = 'failed';
+      tx.transferFailureReason = tRes?.data?.message || tRes?.data?.error || 'transfer_rejected';
+      tx.transferFailureMeta = tRes?.data || null;
       await tx.save();
       request.log?.warn?.({
         bookingId: booking?._id ? String(booking._id) : null,
@@ -160,6 +162,8 @@ export async function attemptPaystackTransfer({ tx, booking, payAmount, recipien
     tx.transferRef = transferData.transfer_code || transferData.reference || transferData.id;
     tx.transferAmount = payAmount;
     tx.transferStatus = rawStatus;
+    tx.transferFailureReason = undefined;
+    tx.transferFailureMeta = undefined;
     await tx.save();
     request.log?.info?.({
       bookingId: booking?._id ? String(booking._id) : null,
@@ -179,8 +183,13 @@ export async function attemptPaystackTransfer({ tx, booking, payAmount, recipien
       reason: rawStatus
     };
   } catch (e) {
-    request.log?.error?.('auto payout failed', e?.response?.data || e?.message || e);
+    const failure = e?.response?.data || { message: e?.message || String(e) };
+    request.log?.error?.({ failure }, 'auto payout failed');
     tx.transferStatus = tx.transferStatus === 'success' ? 'success' : 'failed';
+    if (tx.transferStatus !== 'success') {
+      tx.transferFailureReason = failure?.message || failure?.error || e?.message || String(e);
+      tx.transferFailureMeta = failure;
+    }
     await tx.save();
     return { attempted: true, finalized: false, succeeded: false, reason: 'transfer_error' };
   }
