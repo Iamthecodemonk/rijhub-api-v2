@@ -36,6 +36,15 @@ export default async function (fastify, opts) {
     }
   };
   // Public: list offerings for a given artisan (by artisanId or artisan doc id)
+  fastify.get('/', async (request, reply) => {
+    if (!request.query?.artisanId) {
+      return reply.code(400).send({ success: false, message: 'artisanId query param required' });
+    }
+    request.params = { ...(request.params || {}), artisanId: request.query.artisanId };
+    const { listByArtisan } = await import('../controllers/artisanServiceController.js');
+    return listByArtisan(request, reply);
+  });
+
   fastify.get('/artisan/:artisanId', async (request, reply) => {
     const { listByArtisan } = await import('../controllers/artisanServiceController.js');
     return listByArtisan(request, reply);

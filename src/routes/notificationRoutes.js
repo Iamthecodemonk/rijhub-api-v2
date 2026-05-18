@@ -10,6 +10,10 @@ export default async function notificationRoutes(fastify, opts) {
   fastify.get('/', { preHandler: verifyJWT, schema: listQuery }, listNotifications);
   // count notifications (place before :id so 'count' isn't treated as an id)
   fastify.get('/count', { preHandler: verifyJWT }, getNotificationsCount);
+  fastify.get('/unread-count', { preHandler: verifyJWT }, async (request, reply) => {
+    request.query = { ...(request.query || {}), unread: 'true' };
+    return getNotificationsCount(request, reply);
+  });
   // bulk mark as read
   fastify.post('/mark-read', { preHandler: verifyJWT }, markRead);
   // mark all read

@@ -20,6 +20,7 @@ import locationsRoutes from './routes/locationsRoutes.js';
 import walletRoutes from './routes/walletRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
 import paymentRoutes from './routes/paymentRoutes.js';
+import { paymentWebhook } from './controllers/paymentController.js';
 import reviewRoutes from './routes/reviewRoutes.js';
 import usersRoutes from './routes/users.js';  
 import { startAutoCancel } from './utils/autoCancel.js';
@@ -142,6 +143,19 @@ export default async function app(fastify, opts) {
 
   // Special service requests (clients create, artisans respond)
   fastify.register(specialServiceRequestRoutes, { prefix: '/api/special-service-requests' });
+
+  fastify.setNotFoundHandler(async (request, reply) => {
+    const pathname = String(request.raw?.url || request.url || '').split('?')[0].replace(/\/+$/, '');
+    if (request.method === 'POST' && ['/api/payments/webhook', '/api/payment/webhook'].includes(pathname)) {
+      request.log?.warn?.({ pathname }, 'payment webhook reached notFound fallback');
+      return paymentWebhook(request, reply);
+    }
+    return reply.code(404).send({
+      message: `Route ${request.method}:${request.url} not found`,
+      error: 'Not Found',
+      statusCode: 404,
+    });
+  });
 
   // Serve project API documentation (Markdown)
   fastify.get('/docs', async (request, reply) => {
