@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const FINAL_TRANSFER_STATUSES = new Set(['success', 'processed', 'completed']);
-const IN_FLIGHT_TRANSFER_STATUSES = new Set(['pending', 'processing', 'queued']);
+const IN_FLIGHT_TRANSFER_STATUSES = new Set(['pending', 'processing', 'queued', 'otp']);
 
 export function getPaystackMaxAmountKobo() {
   const raw = process.env.PAYSTACK_MAX_AMOUNT_KOBO;
@@ -36,11 +36,17 @@ export function getPayoutNotificationState(tx) {
   }
 
   if (IN_FLIGHT_TRANSFER_STATUSES.has(transferStatus)) {
+    const artisanBodySuffix = transferStatus === 'otp'
+      ? 'Your payout is waiting for Paystack transfer authorization.'
+      : 'Your payout is processing and will be confirmed shortly.';
+    const customerBodySuffix = transferStatus === 'otp'
+      ? 'The artisan payout is waiting for transfer authorization.'
+      : 'The artisan payout is processing.';
     return {
       artisanTitle: 'Job completed - payout processing',
-      artisanBodySuffix: 'Your payout is processing and will be confirmed shortly.',
+      artisanBodySuffix,
       customerTitle: 'Job completed - payout processing',
-      customerBodySuffix: 'The artisan payout is processing.',
+      customerBodySuffix,
     };
   }
 
@@ -162,8 +168,13 @@ export async function attemptPaystackTransfer({ tx, booking, payAmount, recipien
     tx.transferRef = transferData.transfer_code || transferData.reference || transferData.id;
     tx.transferAmount = payAmount;
     tx.transferStatus = rawStatus;
-    tx.transferFailureReason = undefined;
-    tx.transferFailureMeta = undefined;
+    if (rawStatus === 'otp') {
+      tx.transferFailureReason = 'paystack_transfer_requires_otp';
+      tx.transferFailureMeta = tRes.data;
+    } else {
+      tx.transferFailureReason = undefined;
+      tx.transferFailureMeta = undefined;
+    }
     await tx.save();
     request.log?.info?.({
       bookingId: booking?._id ? String(booking._id) : null,

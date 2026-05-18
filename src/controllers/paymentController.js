@@ -631,16 +631,18 @@ export async function paymentWebhook(request, reply) {
           }
         }
         return reply.code(200).send({ success: true, message: 'Transfer handled' });
-      } else if (payload.event === 'transfer.failed') {
+      } else if (payload.event === 'transfer.failed' || payload.event === 'transfer.reversed') {
         const transferCode = payload.data?.transfer_code || payload.data?.reference || payload.data?.id;
         if (transferCode) {
           const tx = await Transaction.findOne({ transferRef: transferCode });
           if (tx) {
-            tx.transferStatus = 'failed';
+            tx.transferStatus = payload.event === 'transfer.reversed' ? 'reversed' : 'failed';
+            tx.transferFailureReason = payload.data?.failure_reason || payload.data?.reason || payload.data?.message || payload.event;
+            tx.transferFailureMeta = payload.data || null;
             await tx.save();
             // notify artisan and admin for manual action
-            await createNotification(request.server, tx.payeeId, { type: 'payout', title: 'Payout failed', body: `Payout for booking ${tx.bookingId} failed. Admin will follow up.`, data: { bookingId: tx.bookingId } });
-            if (process.env.COMPANY_USER_ID) await createNotification(request.server, process.env.COMPANY_USER_ID, { type: 'payout', title: 'Payout failed', body: `Payout for booking ${tx.bookingId} failed.`, data: { bookingId: tx.bookingId } });
+            await createNotification(request.server, tx.payeeId, { type: 'payout', title: 'Payout failed', body: `Payout for booking ${tx.bookingId} failed. Admin will follow up.`, data: { bookingId: tx.bookingId, transferStatus: tx.transferStatus, reason: tx.transferFailureReason } });
+            if (process.env.COMPANY_USER_ID) await createNotification(request.server, process.env.COMPANY_USER_ID, { type: 'payout', title: 'Payout failed', body: `Payout for booking ${tx.bookingId} failed.`, data: { bookingId: tx.bookingId, transferStatus: tx.transferStatus, reason: tx.transferFailureReason } });
           }
         }
         return reply.code(200).send({ success: true, message: 'Transfer failure handled' });

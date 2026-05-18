@@ -20,7 +20,7 @@ const transactionSchema = new mongoose.Schema({
   // transfer fields for payouts to artisan
   transferRef: { type: String },
   transferAmount: { type: Number },
-  transferStatus: { type: String, enum: ['none','pending','processing','processed','queued','completed','success','failed'], default: 'none' },
+  transferStatus: { type: String, enum: ['none','pending','processing','processed','queued','completed','success','failed','otp','reversed'], default: 'none' },
   transferFailureReason: { type: String },
   transferFailureMeta: { type: mongoose.Schema.Types.Mixed },
   internalWalletCreditedAt: { type: Date },
