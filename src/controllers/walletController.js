@@ -141,9 +141,24 @@ export async function setPayoutDetails(request, reply) {
     const { name, account_number, bank_code, bank_name, currency } = request.body || {};
     if (!account_number || !bank_code || !name) return reply.code(400).send({ success: false, message: 'name, account_number and bank_code are required' });
 
-    const updates = { payoutDetails: { name, account_number, bank_code, bank_name: bank_name || null, currency: currency || 'NGN' } };
+    const payoutDetails = { name, account_number, bank_code, bank_name: bank_name || null, currency: currency || 'NGN' };
+    const existing = await Wallet.findOne({ userId }).lean();
+    const payoutChanged = !!existing && (
+      existing.payoutDetails?.account_number !== account_number ||
+      existing.payoutDetails?.bank_code !== bank_code ||
+      existing.payoutDetails?.name !== name
+    );
+    const update = { $set: { payoutDetails } };
+    if (payoutChanged) {
+      update.$unset = {
+        paystackRecipientCode: '',
+        paystackRecipientMeta: '',
+        paystackSubaccountCode: '',
+        paystackSubaccountMeta: '',
+      };
+    }
     // ensure wallet exists and save payout details
-    const wallet = await Wallet.findOneAndUpdate({ userId }, updates, { new: true, upsert: true });
+    const wallet = await Wallet.findOneAndUpdate({ userId }, update, { new: true, upsert: true });
     return reply.send({ success: true, data: wallet });
   } catch (err) {
     request.log?.error?.(err);
@@ -158,5 +173,5 @@ export async function setPayoutDetails(request, reply) {
     if (!w || !w.payoutDetails) return reply.code(404).send({ message: 'no-payout-details' });
     const pd = w.payoutDetails;
     const masked = Object.assign({}, pd, { account_number: pd.account_number ? pd.account_number.slice(-4).padStart(pd.account_number.length, '*') : undefined });
-    return reply.send({ payoutDetails: masked, hasRecipient: !!w.paystackRecipientCode });
+    return reply.send({ payoutDetails: masked, hasRecipient: !!w.paystackRecipientCode, hasSubaccount: !!w.paystackSubaccountCode });
   };

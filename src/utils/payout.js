@@ -24,6 +24,15 @@ export function hasFinalizedPayout(tx) {
 export function getPayoutNotificationState(tx) {
   const transferStatus = String(tx?.transferStatus || '').toLowerCase();
 
+  if (tx?.paystackSplit) {
+    return {
+      artisanTitle: 'Job completed - settlement scheduled',
+      artisanBodySuffix: 'Paystack has split the payment and will settle your earnings to your bank account.',
+      customerTitle: 'Job completed - payment received',
+      customerBodySuffix: 'The payment has been split for platform commission and artisan settlement.',
+    };
+  }
+
   if (tx?.internalWalletCreditedAt) {
     return {
       artisanTitle: 'Job completed - wallet credited',
@@ -130,6 +139,80 @@ export async function ensurePaystackRecipient({ wallet, artisanDoc, request }) {
       userId: wallet?.userId ? String(wallet.userId) : null,
       failure: e?.response?.data || { message: e?.message || String(e) },
     }, 'create paystack recipient failed');
+    return null;
+  }
+}
+
+export async function ensurePaystackSubaccount({ wallet, artisanDoc, request }) {
+  if (!process.env.PAYSTACK_SECRET_KEY) {
+    request.log?.warn?.({
+      userId: wallet?.userId ? String(wallet.userId) : null,
+    }, 'paystack subaccount skipped: missing secret key');
+    return null;
+  }
+  if (!wallet?.payoutDetails?.account_number || !wallet?.payoutDetails?.bank_code || !wallet?.payoutDetails?.name) {
+    request.log?.warn?.({
+      userId: wallet?.userId ? String(wallet.userId) : null,
+      hasAccountNumber: !!wallet?.payoutDetails?.account_number,
+      hasBankCode: !!wallet?.payoutDetails?.bank_code,
+      hasName: !!wallet?.payoutDetails?.name,
+    }, 'paystack subaccount skipped: incomplete payout details');
+    return null;
+  }
+
+  const existingCode = wallet.paystackSubaccountCode || artisanDoc?.paystackSubaccountCode;
+  if (existingCode) return existingCode;
+
+  try {
+    request.log?.info?.({
+      userId: wallet?.userId ? String(wallet.userId) : null,
+      bankCode: wallet.payoutDetails.bank_code,
+      accountLast4: String(wallet.payoutDetails.account_number).slice(-4),
+    }, 'paystack subaccount creating');
+
+    const res = await axios.post('https://api.paystack.co/subaccount', {
+      business_name: wallet.payoutDetails.name,
+      settlement_bank: wallet.payoutDetails.bank_code,
+      account_number: wallet.payoutDetails.account_number,
+      percentage_charge: 0,
+    }, { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' } });
+
+    const responseOk = res?.data?.status === true;
+    const data = res?.data?.data;
+    if (!responseOk || !data?.subaccount_code) {
+      request.log?.warn?.({
+        userId: wallet?.userId ? String(wallet.userId) : null,
+        response: res?.data || null,
+      }, 'paystack subaccount creation returned no subaccount code');
+      return null;
+    }
+
+    wallet.paystackSubaccountCode = data.subaccount_code;
+    wallet.paystackSubaccountMeta = data;
+    await wallet.save();
+
+    if (artisanDoc) {
+      try {
+        artisanDoc.paystackSubaccountCode = data.subaccount_code;
+        artisanDoc.paystackSubaccountMeta = data;
+        await artisanDoc.save();
+      } catch (e) {
+        request.log?.warn?.('failed to update artisan with subaccount code', e?.message || e);
+      }
+    }
+
+    request.log?.info?.({
+      userId: wallet?.userId ? String(wallet.userId) : null,
+      subaccountCode: maskCode(data.subaccount_code),
+      paystackSubaccountId: data.id,
+    }, 'paystack subaccount created');
+
+    return data.subaccount_code;
+  } catch (e) {
+    request.log?.error?.({
+      userId: wallet?.userId ? String(wallet.userId) : null,
+      failure: e?.response?.data || { message: e?.message || String(e) },
+    }, 'create paystack subaccount failed');
     return null;
   }
 }

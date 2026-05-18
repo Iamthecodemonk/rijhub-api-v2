@@ -12,6 +12,7 @@ import { sendSms as sendChampSms } from '../utils/sendchamp.js';
 import { normalizePaymentMode } from '../utils/paymentMode.js';
 import { attemptPaystackTransfer, creditArtisanWalletIfNeeded, ensurePaystackRecipient, getPayoutNotificationState, hasFinalizedPayout, recordArtisanPayoutStatsIfNeeded, recordCustomerSpendStatsIfNeeded } from '../utils/payout.js';
 import { getPaystackCallbackUrl } from '../utils/paystack.js';
+import { buildPaystackSplitParams } from '../utils/paystackSplit.js';
 import { formatNotificationDate, formatNotificationMoney } from '../utils/notificationText.js';
 
 function normalizePhone(phone) {
@@ -388,11 +389,13 @@ export async function hireAndInitialize(request, reply) {
     // initialize paystack transaction
     const amountInKobo = Math.round(Number(price) * 100);
     const callbackUrl = getPaystackCallbackUrl();
+    const split = await buildPaystackSplitParams({ artisanUserId: booking.artisanId, amount: Number(price) || 0, request });
     const res = await axios.post('https://api.paystack.co/transaction/initialize', {
       email,
       amount: amountInKobo,
       metadata: { bookingId: booking._id, customerCoords },
-      callback_url: callbackUrl
+      callback_url: callbackUrl,
+      ...split.params,
     }, {
       headers: {
         Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
@@ -403,7 +406,20 @@ export async function hireAndInitialize(request, reply) {
     const init = res?.data?.data;
     if (init) {
       // create local transaction record for reconciliation
-      await Transaction.create({ bookingId: booking._id, payerId: payload.customerId || null, amount: Number(price) || 0, status: 'pending', paymentGatewayRef: init.reference });
+      await Transaction.create({
+        bookingId: booking._id,
+        payerId: payload.customerId || null,
+        amount: Number(price) || 0,
+        status: 'pending',
+        paymentGatewayRef: init.reference,
+        paystackSplit: split.enabled,
+        paystackSubaccountCode: split.meta?.subaccountCode,
+        paystackSplitBearer: split.meta?.bearer,
+        paystackTransactionCharge: split.meta?.transactionCharge,
+        paystackSplitMeta: split.meta,
+        companyFee: split.meta?.companyFee,
+        transferAmount: split.meta?.transferAmount,
+      });
     }
 
     // notify artisan asynchronously after payment initialization to avoid blocking response
@@ -697,11 +713,13 @@ export async function initiateDeferredPayment(request, reply) {
 
     const amountInKobo = Math.round(Number(booking.price || 0) * 100);
     const callbackUrl = getPaystackCallbackUrl();
+    const split = await buildPaystackSplitParams({ artisanUserId: booking.artisanId?._id || booking.artisanId, amount: Number(booking.price || 0), request });
     const res = await axios.post('https://api.paystack.co/transaction/initialize', {
       email,
       amount: amountInKobo,
       metadata: { bookingId: booking._id, customerCoords: request.body?.customerCoords },
-      callback_url: callbackUrl
+      callback_url: callbackUrl,
+      ...split.params,
     }, {
       headers: {
         Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
@@ -711,7 +729,20 @@ export async function initiateDeferredPayment(request, reply) {
 
     const init = res?.data?.data;
     if (init) {
-      await Transaction.create({ bookingId: booking._id, payerId: request.user?.id || booking.customerId?._id || null, amount: Number(booking.price) || 0, status: 'pending', paymentGatewayRef: init.reference });
+      await Transaction.create({
+        bookingId: booking._id,
+        payerId: request.user?.id || booking.customerId?._id || null,
+        amount: Number(booking.price) || 0,
+        status: 'pending',
+        paymentGatewayRef: init.reference,
+        paystackSplit: split.enabled,
+        paystackSubaccountCode: split.meta?.subaccountCode,
+        paystackSplitBearer: split.meta?.bearer,
+        paystackTransactionCharge: split.meta?.transactionCharge,
+        paystackSplitMeta: split.meta,
+        companyFee: split.meta?.companyFee,
+        transferAmount: split.meta?.transferAmount,
+      });
     }
 
     return reply.code(201).send({ success: true, data: { booking, payment: res.data.data } });
@@ -1006,7 +1037,16 @@ export async function completeBooking(request, reply) {
       if (!recipientCode) recipientCode = await ensurePaystackRecipient({ wallet, artisanDoc, request });
 
       let transferResult = { attempted: false, finalized: false, succeeded: false };
-      if (autoPayout && process.env.PAYSTACK_SECRET_KEY && recipientCode) {
+      if (tx.paystackSplit) {
+        transferResult = { attempted: false, finalized: true, succeeded: true, reason: 'paystack_split' };
+        request.log?.info?.({
+          bookingId: String(booking._id),
+          transactionId: String(tx._id),
+          subaccountCode: tx.paystackSubaccountCode,
+          companyFee: tx.companyFee,
+          transferAmount: tx.transferAmount,
+        }, 'booking completion payout handled by paystack split');
+      } else if (autoPayout && process.env.PAYSTACK_SECRET_KEY && recipientCode) {
         transferResult = await attemptPaystackTransfer({ tx, booking, payAmount, recipientCode, request });
       }
 
@@ -1017,8 +1057,17 @@ export async function completeBooking(request, reply) {
         await tx.save();
       } else if (transferResult.inFlight) {
         await recordArtisanPayoutStatsIfNeeded({ tx, wallet, payAmount });
-      } else if (!autoPayout || !transferResult.attempted || (transferResult.attempted && !transferResult.succeeded && !transferResult.inFlight)) {
+      } else if (!autoPayout || !transferResult.attempted) {
         await creditArtisanWalletIfNeeded({ tx, wallet, payAmount });
+      } else {
+        request.log?.error?.({
+          bookingId: String(booking._id),
+          transactionId: String(tx._id),
+          payAmount,
+          transferResult,
+          transferStatus: tx.transferStatus,
+          transferFailureReason: tx.transferFailureReason || null,
+        }, 'booking completion payout failed: bank transfer requires retry');
       }
 
       // Record company/platform commission and optionally credit company wallet

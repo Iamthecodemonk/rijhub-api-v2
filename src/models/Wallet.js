@@ -19,6 +19,9 @@ const walletSchema = new mongoose.Schema({
   // stored Paystack recipient code and metadata (if created)
   paystackRecipientCode: { type: String },
   paystackRecipientMeta: { type: Object },
+  // stored Paystack subaccount code and metadata for split payments
+  paystackSubaccountCode: { type: String },
+  paystackSubaccountMeta: { type: Object },
 });
 
 export default mongoose.model('Wallet', walletSchema);

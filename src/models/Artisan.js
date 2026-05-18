@@ -44,6 +44,9 @@ const artisanSchema = new mongoose.Schema({
   // Paystack recipient code and metadata for payouts
   paystackRecipientCode: { type: String },
   paystackRecipientMeta: { type: Object },
+  // Paystack subaccount code and metadata for split payments
+  paystackSubaccountCode: { type: String },
+  paystackSubaccountMeta: { type: Object },
   createdAt: { type: Date, default: Date.now },
 });
 

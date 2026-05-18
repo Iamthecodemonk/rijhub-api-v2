@@ -8,6 +8,7 @@ import axios from 'axios';
 import { createNotification } from '../utils/notifier.js';
 import { normalizePaymentMode } from '../utils/paymentMode.js';
 import { getPaystackCallbackUrl } from '../utils/paystack.js';
+import { buildPaystackSplitParams } from '../utils/paystackSplit.js';
 
 // Create a new special service request (client)
 export const createSpecialServiceRequest = async (req, reply) => {
@@ -311,13 +312,14 @@ export const updateSpecialServiceRequest = async (req, reply) => {
             req.log?.info?.({ reqId: req.id, specialRequestId: String(doc._id), txId: tx._id, amount: Number(price) || 0 }, 'created pending Transaction because email not available');
           } else {
             const amountInKobo = Math.round(Number(price) * 100);
-            const initPayload = { email, amount: amountInKobo, metadata: { specialRequestId: String(doc._id), selectedPrice: Number(price) }, callback_url: getPaystackCallbackUrl() };
+            const split = await buildPaystackSplitParams({ artisanUserId: doc.artisanId, amount: Number(price), request: req });
+            const initPayload = { email, amount: amountInKobo, metadata: { specialRequestId: String(doc._id), selectedPrice: Number(price) }, callback_url: getPaystackCallbackUrl(), ...split.params };
             req.log?.info?.({ reqId: req.id, specialRequestId: String(doc._id), initPayload }, 'calling paystack initialize for special request');
             const res = await axios.post('https://api.paystack.co/transaction/initialize', initPayload, { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' } });
             paymentInit = res?.data?.data || null;
             req.log?.info?.({ reqId: req.id, specialRequestId: String(doc._id), paymentInit }, 'paystack initialize response for special request');
             if (paymentInit) {
-              const tx = await Transaction.create({ specialRequestId: doc._id, payerId: req.user?.id || null, amount: Number(price) || 0, status: 'pending', paymentGatewayRef: paymentInit.reference });
+              const tx = await Transaction.create({ specialRequestId: doc._id, payerId: req.user?.id || null, payeeId: doc.artisanId || null, amount: Number(price) || 0, status: 'pending', paymentGatewayRef: paymentInit.reference, paystackSplit: split.enabled, paystackSubaccountCode: split.meta?.subaccountCode, paystackSplitBearer: split.meta?.bearer, paystackTransactionCharge: split.meta?.transactionCharge, paystackSplitMeta: split.meta, companyFee: split.meta?.companyFee, transferAmount: split.meta?.transferAmount });
               req.log?.info?.({ reqId: req.id, specialRequestId: String(doc._id), txId: tx._id, paymentReference: paymentInit.reference }, 'created Transaction from paystack init');
             }
           }
@@ -523,13 +525,14 @@ export const payForSpecialService = async (req, reply) => {
       // initialize Paystack transaction for special request (metadata includes specialRequestId and selectedPrice)
       try {
         const amountInKobo = Math.round(Number(price) * 100);
-        const initPayload = { email, amount: amountInKobo, metadata: { specialRequestId: String(doc._id), selectedPrice: Number(price) }, callback_url: getPaystackCallbackUrl() };
+        const split = await buildPaystackSplitParams({ artisanUserId: doc.artisanId, amount: Number(price), request: req });
+        const initPayload = { email, amount: amountInKobo, metadata: { specialRequestId: String(doc._id), selectedPrice: Number(price) }, callback_url: getPaystackCallbackUrl(), ...split.params };
         req.log?.info?.({ reqId: req.id, specialRequestId: String(doc._id), initPayload }, 'calling paystack initialize for special request (deferred)');
         const res = await axios.post('https://api.paystack.co/transaction/initialize', initPayload, { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' } });
         const init = res?.data?.data || null;
         req.log?.info?.({ reqId: req.id, specialRequestId: String(doc._id), paymentInit: init }, 'paystack initialize response for special request');
         if (init) {
-          const tx = await Transaction.create({ specialRequestId: doc._id, payerId: userId || null, amount: Number(price) || 0, status: 'pending', paymentGatewayRef: init.reference });
+          const tx = await Transaction.create({ specialRequestId: doc._id, payerId: userId || null, payeeId: doc.artisanId || null, amount: Number(price) || 0, status: 'pending', paymentGatewayRef: init.reference, paystackSplit: split.enabled, paystackSubaccountCode: split.meta?.subaccountCode, paystackSplitBearer: split.meta?.bearer, paystackTransactionCharge: split.meta?.transactionCharge, paystackSplitMeta: split.meta, companyFee: split.meta?.companyFee, transferAmount: split.meta?.transferAmount });
           req.log?.info?.({ reqId: req.id, txId: tx._id, paymentReference: init.reference }, 'created Transaction from paystack init (deferred special request)');
         }
         return reply.code(201).send({ success: true, data: { request: doc, booking: null, payment: init } });

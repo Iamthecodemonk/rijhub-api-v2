@@ -6,6 +6,7 @@ import axios from 'axios';
 import Job from '../models/Job.js';
 import { normalizePaymentMode } from '../utils/paymentMode.js';
 import { getPaystackCallbackUrl } from '../utils/paystack.js';
+import { buildPaystackSplitParams } from '../utils/paystackSplit.js';
 const Artisan = (await import('../models/Artisan.js')).default;
 const Transaction = (await import('../models/Transaction.js')).default;
 
@@ -260,12 +261,13 @@ export async function acceptQuote(request, reply) {
 
     const amountInKobo = Math.round(Number(quote.serviceCharge || 0) * 100);
     try {
-      const res = await axios.post('https://api.paystack.co/transaction/initialize', { email, amount: amountInKobo, metadata: { bookingId: booking._id, quoteId: quote._id }, callback_url: getPaystackCallbackUrl() }, { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' } });
+      const split = await buildPaystackSplitParams({ artisanUserId: booking.artisanId?._id || booking.artisanId, amount: Number(quote.serviceCharge || 0), request });
+      const res = await axios.post('https://api.paystack.co/transaction/initialize', { email, amount: amountInKobo, metadata: { bookingId: booking._id, quoteId: quote._id }, callback_url: getPaystackCallbackUrl(), ...split.params }, { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' } });
       const init = res?.data?.data;
       if (init) {
         // persist a pending transaction for reconciliation
         // const Transaction = (await import('../models/Transaction.js')).default;
-        await Transaction.create({ bookingId: booking._id, payerId: booking.customerId?._id || null, payeeId: booking.artisanId?._id || null, amount: quote.serviceCharge || 0, status: 'pending', paymentGatewayRef: init.reference });
+        await Transaction.create({ bookingId: booking._id, payerId: booking.customerId?._id || null, payeeId: booking.artisanId?._id || null, amount: quote.serviceCharge || 0, status: 'pending', paymentGatewayRef: init.reference, paystackSplit: split.enabled, paystackSubaccountCode: split.meta?.subaccountCode, paystackSplitBearer: split.meta?.bearer, paystackTransactionCharge: split.meta?.transactionCharge, paystackSplitMeta: split.meta, companyFee: split.meta?.companyFee, transferAmount: split.meta?.transferAmount });
       }
       return reply.code(201).send({ success: true, data: { quote, booking, payment: res.data.data } });
     } catch (e) {
@@ -301,13 +303,14 @@ export async function payWithQuote(request, reply) {
 
     // Only initialize payment for the serviceCharge — other costs are paid outside the platform
     const amountInKobo = Math.round(Number(quote.serviceCharge || 0) * 100);
-    const res = await axios.post('https://api.paystack.co/transaction/initialize', { email, amount: amountInKobo, metadata: { bookingId, quoteId: quote._id }, callback_url: getPaystackCallbackUrl() }, { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' } });
+    const split = await buildPaystackSplitParams({ artisanUserId: booking.artisanId?._id || booking.artisanId, amount: Number(quote.serviceCharge || 0), request });
+    const res = await axios.post('https://api.paystack.co/transaction/initialize', { email, amount: amountInKobo, metadata: { bookingId, quoteId: quote._id }, callback_url: getPaystackCallbackUrl(), ...split.params }, { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' } });
 
     const init = res?.data?.data;
     if (init) {
       // persist a pending transaction for reconciliation
       // const Transaction = (await import('../models/Transaction.js')).default;
-      await Transaction.create({ bookingId: booking._id, payerId: request.user?.id || null, amount: quote.serviceCharge || 0, status: 'pending', paymentGatewayRef: init.reference });
+      await Transaction.create({ bookingId: booking._id, payerId: request.user?.id || null, amount: quote.serviceCharge || 0, status: 'pending', paymentGatewayRef: init.reference, paystackSplit: split.enabled, paystackSubaccountCode: split.meta?.subaccountCode, paystackSplitBearer: split.meta?.bearer, paystackTransactionCharge: split.meta?.transactionCharge, paystackSplitMeta: split.meta, companyFee: split.meta?.companyFee, transferAmount: split.meta?.transferAmount });
     }
 
     return reply.code(201).send({ success: true, data: { booking, payment: res.data.data } });
@@ -411,11 +414,12 @@ export async function acceptJobQuote(request, reply) {
 
     const amountInKobo = Math.round(Number(quote.total || 0) * 100);
     try {
-      const res = await axios.post('https://api.paystack.co/transaction/initialize', { email, amount: amountInKobo, metadata: { jobId: job._id, quoteId: quote._id }, callback_url: getPaystackCallbackUrl() }, { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' } });
+      const split = await buildPaystackSplitParams({ artisanUserId: quote.artisanId, amount: Number(quote.total || 0), request });
+      const res = await axios.post('https://api.paystack.co/transaction/initialize', { email, amount: amountInKobo, metadata: { jobId: job._id, quoteId: quote._id }, callback_url: getPaystackCallbackUrl(), ...split.params }, { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' } });
       const init = res?.data?.data;
       if (init) {
         // create a transaction record referencing the quote (booking will be attached upon payment confirmation)
-        await Transaction.create({ quoteId: quote._id, payerId: job.clientId?._id || null, payeeId: quote.artisanId || null, amount: quote.total || 0, status: 'pending', paymentGatewayRef: init.reference });
+        await Transaction.create({ quoteId: quote._id, payerId: job.clientId?._id || null, payeeId: quote.artisanId || null, amount: quote.total || 0, status: 'pending', paymentGatewayRef: init.reference, paystackSplit: split.enabled, paystackSubaccountCode: split.meta?.subaccountCode, paystackSplitBearer: split.meta?.bearer, paystackTransactionCharge: split.meta?.transactionCharge, paystackSplitMeta: split.meta, companyFee: split.meta?.companyFee, transferAmount: split.meta?.transferAmount });
       }
       return reply.code(201).send({ success: true, data: { quote, payment: res.data.data } });
     } catch (e) {
