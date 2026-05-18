@@ -20,6 +20,18 @@ function markTransactionHoldingIfUnreleased(tx) {
   tx.status = 'holding';
 }
 
+function markPaidBookingAfterCompletion(booking, request) {
+  if (!booking) return;
+  booking.paymentStatus = 'paid';
+  if (booking.paymentMode === 'afterCompletion') {
+    booking.status = 'completed';
+    booking.awaitingReview = true;
+    request?.log?.info?.({ bookingId: String(booking._id) }, 'afterCompletion payment verified; booking auto-completed');
+  } else {
+    booking.status = booking.status === 'pending' ? 'awaiting-acceptance' : booking.status;
+  }
+}
+
 async function releaseCompletedDeferredBookingPayment(booking, tx, request) {
   if (!booking || !tx) return;
   if (hasFinalizedPayout(tx) || tx.transferRef) {
@@ -399,8 +411,7 @@ export async function verifyPayment(request, reply) {
           if (booking) {
             try {
               // ensure booking is marked paid and chat exists
-              booking.paymentStatus = 'paid';
-              booking.status = booking.status === 'pending' ? 'awaiting-acceptance' : booking.status;
+              markPaidBookingAfterCompletion(booking, request);
               await booking.save();
 
               tx.bookingId = booking._id;
@@ -680,9 +691,7 @@ export async function paymentWebhook(request, reply) {
       const booking = await Booking.findById(_b).populate('customerId artisanId');
       if (!booking) return reply.code(404).send({ success: false, message: 'Booking not found' });
 
-      booking.paymentStatus = 'paid';
-      // Do not auto-accept on payment; move to awaiting-acceptance so artisan can accept/reject.
-      booking.status = booking.status === 'pending' ? 'awaiting-acceptance' : booking.status;
+      markPaidBookingAfterCompletion(booking, request);
       await booking.save();
 
       // create chat if missing
