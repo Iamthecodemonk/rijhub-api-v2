@@ -3,6 +3,13 @@ import axios from 'axios';
 const FINAL_TRANSFER_STATUSES = new Set(['success', 'processed', 'completed']);
 const IN_FLIGHT_TRANSFER_STATUSES = new Set(['pending', 'processing', 'queued', 'otp']);
 
+function maskCode(value) {
+  if (!value) return null;
+  const raw = String(value);
+  if (raw.length <= 10) return raw;
+  return `${raw.slice(0, 6)}...${raw.slice(-4)}`;
+}
+
 export function getPaystackMaxAmountKobo() {
   const raw = process.env.PAYSTACK_MAX_AMOUNT_KOBO;
   if (raw === undefined || raw === null || raw === '') return null;
@@ -59,10 +66,29 @@ export function getPayoutNotificationState(tx) {
 }
 
 export async function ensurePaystackRecipient({ wallet, artisanDoc, request }) {
-  if (!process.env.PAYSTACK_SECRET_KEY) return null;
-  if (!wallet?.payoutDetails?.account_number || !wallet?.payoutDetails?.bank_code || !wallet?.payoutDetails?.name) return null;
+  if (!process.env.PAYSTACK_SECRET_KEY) {
+    request.log?.warn?.({
+      userId: wallet?.userId ? String(wallet.userId) : null,
+    }, 'paystack recipient skipped: missing secret key');
+    return null;
+  }
+  if (!wallet?.payoutDetails?.account_number || !wallet?.payoutDetails?.bank_code || !wallet?.payoutDetails?.name) {
+    request.log?.warn?.({
+      userId: wallet?.userId ? String(wallet.userId) : null,
+      hasAccountNumber: !!wallet?.payoutDetails?.account_number,
+      hasBankCode: !!wallet?.payoutDetails?.bank_code,
+      hasName: !!wallet?.payoutDetails?.name,
+    }, 'paystack recipient skipped: incomplete payout details');
+    return null;
+  }
 
   try {
+    request.log?.info?.({
+      userId: wallet?.userId ? String(wallet.userId) : null,
+      bankCode: wallet.payoutDetails.bank_code,
+      accountLast4: String(wallet.payoutDetails.account_number).slice(-4),
+    }, 'paystack recipient creating');
+
     const pr = await axios.post('https://api.paystack.co/transferrecipient', {
       type: 'nuban',
       name: wallet.payoutDetails.name,
@@ -92,9 +118,18 @@ export async function ensurePaystackRecipient({ wallet, artisanDoc, request }) {
       }
     }
 
+    request.log?.info?.({
+      userId: wallet?.userId ? String(wallet.userId) : null,
+      recipientCode: maskCode(pData.recipient_code),
+      paystackRecipientId: pData.id,
+    }, 'paystack recipient created');
+
     return pData.recipient_code;
   } catch (e) {
-    request.log?.error?.('create paystack recipient failed', e?.response?.data || e?.message || e);
+    request.log?.error?.({
+      userId: wallet?.userId ? String(wallet.userId) : null,
+      failure: e?.response?.data || { message: e?.message || String(e) },
+    }, 'create paystack recipient failed');
     return null;
   }
 }
@@ -140,7 +175,7 @@ export async function attemptPaystackTransfer({ tx, booking, payAmount, recipien
       bookingId: booking?._id ? String(booking._id) : null,
       transactionId: tx?._id ? String(tx._id) : null,
       amountKobo,
-      recipientCode,
+      recipientCode: maskCode(recipientCode),
     }, 'paystack payout initiating');
 
     const tRes = await axios.post('https://api.paystack.co/transfer', {

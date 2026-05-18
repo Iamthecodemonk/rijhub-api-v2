@@ -33,7 +33,24 @@ function markPaidBookingAfterCompletion(booking, request) {
 }
 
 async function releaseCompletedDeferredBookingPayment(booking, tx, request) {
-  if (!booking || !tx) return;
+  if (!booking || !tx) {
+    request?.log?.warn?.({
+      hasBooking: !!booking,
+      hasTransaction: !!tx,
+    }, 'deferred payout skipped: missing booking or transaction');
+    return;
+  }
+  request.log?.info?.({
+    bookingId: String(booking._id),
+    transactionId: String(tx._id),
+    bookingStatus: booking.status,
+    paymentStatus: booking.paymentStatus,
+    paymentMode: booking.paymentMode,
+    txStatus: tx.status,
+    transferStatus: tx.transferStatus,
+    hasTransferRef: !!tx.transferRef,
+    hasInternalWalletCredit: !!tx.internalWalletCreditedAt,
+  }, 'deferred payout release check');
   if (hasFinalizedPayout(tx) || tx.transferRef) {
     try {
       const amount = Number(tx.amount || booking.price || 0);
@@ -59,7 +76,15 @@ async function releaseCompletedDeferredBookingPayment(booking, tx, request) {
     }
     return;
   }
-  if (tx.status !== 'holding' && tx.status !== 'released') return;
+  if (tx.status !== 'holding' && tx.status !== 'released') {
+    request.log?.warn?.({
+      bookingId: String(booking._id),
+      transactionId: String(tx._id),
+      txStatus: tx.status,
+      transferStatus: tx.transferStatus,
+    }, 'deferred payout skipped: transaction not releasable');
+    return;
+  }
   const amount = Number(tx.amount || booking.price || 0);
   let feePct = 0;
   try {
@@ -78,6 +103,14 @@ async function releaseCompletedDeferredBookingPayment(booking, tx, request) {
   tx.status = 'released';
   tx.releasedAt = tx.releasedAt || new Date();
   await tx.save();
+  request.log?.info?.({
+    bookingId: String(booking._id),
+    transactionId: String(tx._id),
+    amount,
+    feePct,
+    companyFee: fee,
+    payAmount,
+  }, 'deferred payout amount calculated');
 
   const artisanDoc = await Artisan.findOne({ userId: booking.artisanId._id });
   let wallet = await Wallet.findOne({ userId: booking.artisanId._id });
@@ -87,19 +120,64 @@ async function releaseCompletedDeferredBookingPayment(booking, tx, request) {
   if (!recipientCode) recipientCode = await ensurePaystackRecipient({ wallet, artisanDoc, request });
 
   const autoPayout = String(process.env.PAYSTACK_AUTO_PAYOUT || '').toLowerCase() === 'true';
+  request.log?.info?.({
+    bookingId: String(booking._id),
+    transactionId: String(tx._id),
+    artisanUserId: booking.artisanId?._id ? String(booking.artisanId._id) : String(booking.artisanId),
+    hasWallet: !!wallet,
+    hasPayoutDetails: !!(wallet?.payoutDetails?.account_number && wallet?.payoutDetails?.bank_code),
+    hasRecipientCode: !!recipientCode,
+    hasPaystackKey: !!process.env.PAYSTACK_SECRET_KEY,
+    autoPayout,
+  }, 'deferred payout destination resolved');
   let transferResult = { attempted: false, finalized: false, succeeded: false };
   if (String(process.env.PAYSTACK_AUTO_PAYOUT || '').toLowerCase() === 'true' && process.env.PAYSTACK_SECRET_KEY && recipientCode) {
     transferResult = await attemptPaystackTransfer({ tx, booking, payAmount, recipientCode, request });
+  } else {
+    request.log?.warn?.({
+      bookingId: String(booking._id),
+      transactionId: String(tx._id),
+      autoPayout,
+      hasPaystackKey: !!process.env.PAYSTACK_SECRET_KEY,
+      hasRecipientCode: !!recipientCode,
+    }, 'deferred payout bank transfer not attempted');
   }
+  request.log?.info?.({
+    bookingId: String(booking._id),
+    transactionId: String(tx._id),
+    transferResult,
+    txStatus: tx.status,
+    transferStatus: tx.transferStatus,
+    transferRef: tx.transferRef || null,
+    transferFailureReason: tx.transferFailureReason || null,
+  }, 'deferred payout transfer result');
 
   if (transferResult.finalized && transferResult.succeeded) {
     await recordArtisanPayoutStatsIfNeeded({ tx, wallet, payAmount });
     tx.status = 'paid';
     await tx.save();
+    request.log?.info?.({
+      bookingId: String(booking._id),
+      transactionId: String(tx._id),
+      payAmount,
+    }, 'deferred payout finalized: stats recorded');
   } else if (transferResult.inFlight) {
     await recordArtisanPayoutStatsIfNeeded({ tx, wallet, payAmount });
+    request.log?.info?.({
+      bookingId: String(booking._id),
+      transactionId: String(tx._id),
+      payAmount,
+      transferStatus: tx.transferStatus,
+    }, 'deferred payout in flight: stats recorded');
   } else if (!autoPayout || !transferResult.attempted || (transferResult.attempted && !transferResult.succeeded && !transferResult.inFlight)) {
     await creditArtisanWalletIfNeeded({ tx, wallet, payAmount });
+    request.log?.warn?.({
+      bookingId: String(booking._id),
+      transactionId: String(tx._id),
+      payAmount,
+      transferResult,
+      transferFailureReason: tx.transferFailureReason || null,
+    }, 'deferred payout fallback: internal wallet credited');
   }
 
   try {
@@ -480,6 +558,13 @@ export async function listPayments(request, reply) {
 export async function paymentWebhook(request, reply) {
   try {
     const payload = request.body || {};
+    request.log?.info?.({
+      event: payload.event || null,
+      reference: payload.data?.reference || payload.gatewayRef || null,
+      transferCode: payload.data?.transfer_code || null,
+      hasBookingId: !!(payload.bookingId || payload.data?.metadata?.bookingId),
+      hasSignature: !!(request.headers['x-paystack-signature'] || request.headers['x-paystack-signature'.toLowerCase()]),
+    }, 'payment webhook received');
     const webhookSecret = process.env.PAYSTACK_WEBHOOK_SECRET;
     const paystackSig = request.headers['x-paystack-signature'] || request.headers['x-paystack-signature'.toLowerCase()];
     if (payload.event && webhookSecret) {
@@ -508,6 +593,13 @@ export async function paymentWebhook(request, reply) {
         status = 'success';
         // Paystack places custom metadata under data.metadata
         bookingId = payload.data?.metadata?.bookingId || bookingId;
+        request.log?.info?.({
+          reference: payload.data?.reference || null,
+          bookingId: bookingId || null,
+          quoteId: payload.data?.metadata?.quoteId || payload.data?.metadata?.quote_id || null,
+          specialRequestId: payload.data?.metadata?.specialRequestId || payload.data?.metadata?.special_request_id || null,
+          amount: payload.data?.amount ? payload.data.amount / 100 : null,
+        }, 'payment webhook charge.success parsed');
         // job/quote based payments may include quoteId/jobId instead of bookingId
         const qId = payload.data?.metadata?.quoteId || payload.data?.metadata?.quote_id;
         const jId = payload.data?.metadata?.jobId || payload.data?.metadata?.job_id;
@@ -613,6 +705,12 @@ export async function paymentWebhook(request, reply) {
         if (transferCode) {
           const tx = await Transaction.findOne({ transferRef: transferCode });
           if (tx) {
+            request.log?.info?.({
+              transactionId: String(tx._id),
+              bookingId: tx.bookingId ? String(tx.bookingId) : null,
+              transferCode,
+              currentTransferStatus: tx.transferStatus,
+            }, 'payment webhook transfer success matched transaction');
             if (!tx.payeeId && tx.bookingId) {
               const booking = await Booking.findById(tx.bookingId).select('artisanId');
               if (booking?.artisanId) tx.payeeId = booking.artisanId;
@@ -628,6 +726,8 @@ export async function paymentWebhook(request, reply) {
             // notify artisan and company
             await createNotification(request.server, tx.payeeId, { type: 'payout', title: 'Payout completed', body: `Payout for booking ${tx.bookingId} completed.`, data: { bookingId: tx.bookingId } });
             if (process.env.COMPANY_USER_ID) await createNotification(request.server, process.env.COMPANY_USER_ID, { type: 'payout', title: 'Payout completed', body: `Payout for booking ${tx.bookingId} completed.`, data: { bookingId: tx.bookingId } });
+          } else {
+            request.log?.warn?.({ transferCode }, 'payment webhook transfer success could not match transaction');
           }
         }
         return reply.code(200).send({ success: true, message: 'Transfer handled' });
@@ -636,6 +736,13 @@ export async function paymentWebhook(request, reply) {
         if (transferCode) {
           const tx = await Transaction.findOne({ transferRef: transferCode });
           if (tx) {
+            request.log?.warn?.({
+              transactionId: String(tx._id),
+              bookingId: tx.bookingId ? String(tx.bookingId) : null,
+              transferCode,
+              event: payload.event,
+              failure: payload.data || null,
+            }, 'payment webhook transfer failure matched transaction');
             tx.transferStatus = payload.event === 'transfer.reversed' ? 'reversed' : 'failed';
             tx.transferFailureReason = payload.data?.failure_reason || payload.data?.reason || payload.data?.message || payload.event;
             tx.transferFailureMeta = payload.data || null;
@@ -643,6 +750,8 @@ export async function paymentWebhook(request, reply) {
             // notify artisan and admin for manual action
             await createNotification(request.server, tx.payeeId, { type: 'payout', title: 'Payout failed', body: `Payout for booking ${tx.bookingId} failed. Admin will follow up.`, data: { bookingId: tx.bookingId, transferStatus: tx.transferStatus, reason: tx.transferFailureReason } });
             if (process.env.COMPANY_USER_ID) await createNotification(request.server, process.env.COMPANY_USER_ID, { type: 'payout', title: 'Payout failed', body: `Payout for booking ${tx.bookingId} failed.`, data: { bookingId: tx.bookingId, transferStatus: tx.transferStatus, reason: tx.transferFailureReason } });
+          } else {
+            request.log?.warn?.({ transferCode, event: payload.event }, 'payment webhook transfer failure could not match transaction');
           }
         }
         return reply.code(200).send({ success: true, message: 'Transfer failure handled' });
