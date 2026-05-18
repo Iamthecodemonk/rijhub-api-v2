@@ -1,4 +1,3 @@
-import mongoose from 'mongoose';
 import axios from 'axios';
 
 const FINAL_TRANSFER_STATUSES = new Set(['success', 'processed', 'completed']);
@@ -189,113 +188,86 @@ export async function attemptPaystackTransfer({ tx, booking, payAmount, recipien
 
 export async function creditArtisanWalletIfNeeded({ tx, wallet, payAmount }) {
   if (tx.internalWalletCreditedAt) return false;
-  const session = await mongoose.startSession();
+  const now = new Date();
+  const marker = await tx.constructor.findOneAndUpdate(
+    { _id: tx._id, $or: [{ internalWalletCreditedAt: { $exists: false } }, { internalWalletCreditedAt: null }] },
+    { $set: { internalWalletCreditedAt: now, status: 'paid' } },
+    { new: true }
+  );
+  if (!marker) return false;
 
-  try {
-    let credited = false;
-
-    await session.withTransaction(async () => {
-      const freshTx = await tx.constructor.findById(tx._id).session(session);
-      if (!freshTx || freshTx.internalWalletCreditedAt) return;
-
-      const freshWallet = await wallet.constructor.findById(wallet._id).session(session);
-      if (!freshWallet) throw new Error('Wallet not found during payout credit');
-
-      freshWallet.balance = (freshWallet.balance || 0) + payAmount;
-      if (!freshTx.artisanStatsCreditedAt) {
-        freshWallet.totalEarned = (freshWallet.totalEarned || 0) + payAmount;
-        freshWallet.totalJobs = (freshWallet.totalJobs || 0) + 1;
-        freshTx.artisanStatsCreditedAt = new Date();
-      }
-      freshWallet.lastUpdated = new Date();
-      await freshWallet.save({ session });
-
-      freshTx.internalWalletCreditedAt = new Date();
-      freshTx.status = 'paid';
-      await freshTx.save({ session });
-
-      tx.internalWalletCreditedAt = freshTx.internalWalletCreditedAt;
-      tx.artisanStatsCreditedAt = freshTx.artisanStatsCreditedAt;
-      tx.status = freshTx.status;
-      wallet.balance = freshWallet.balance;
-      wallet.totalEarned = freshWallet.totalEarned;
-      wallet.totalJobs = freshWallet.totalJobs;
-      wallet.lastUpdated = freshWallet.lastUpdated;
-      credited = true;
-    });
-
-    return credited;
-  } finally {
-    await session.endSession();
+  const statsMarker = await tx.constructor.updateOne(
+    { _id: tx._id, $or: [{ artisanStatsCreditedAt: { $exists: false } }, { artisanStatsCreditedAt: null }] },
+    { $set: { artisanStatsCreditedAt: now } }
+  );
+  const inc = { balance: payAmount };
+  if (statsMarker.modifiedCount > 0) {
+    inc.totalEarned = payAmount;
+    inc.totalJobs = 1;
   }
+
+  const updatedWallet = await wallet.constructor.findOneAndUpdate(
+    { _id: wallet._id },
+    { $inc: inc, $set: { lastUpdated: now } },
+    { new: true }
+  );
+
+  tx.internalWalletCreditedAt = marker.internalWalletCreditedAt;
+  tx.artisanStatsCreditedAt = marker.artisanStatsCreditedAt || (statsMarker.modifiedCount > 0 ? now : tx.artisanStatsCreditedAt);
+  tx.status = marker.status;
+  if (updatedWallet) {
+    wallet.balance = updatedWallet.balance;
+    wallet.totalEarned = updatedWallet.totalEarned;
+    wallet.totalJobs = updatedWallet.totalJobs;
+    wallet.lastUpdated = updatedWallet.lastUpdated;
+  }
+  return true;
 }
 
 export async function recordArtisanPayoutStatsIfNeeded({ tx, wallet, payAmount }) {
   if (!tx || tx.artisanStatsCreditedAt) return false;
-  const session = await mongoose.startSession();
+  const now = new Date();
+  const marker = await tx.constructor.updateOne(
+    { _id: tx._id, $or: [{ artisanStatsCreditedAt: { $exists: false } }, { artisanStatsCreditedAt: null }] },
+    { $set: { artisanStatsCreditedAt: now } }
+  );
+  if (marker.modifiedCount <= 0) return false;
 
-  try {
-    let credited = false;
+  const updatedWallet = await wallet.constructor.findOneAndUpdate(
+    { _id: wallet._id },
+    { $inc: { totalEarned: payAmount, totalJobs: 1 }, $set: { lastUpdated: now } },
+    { new: true }
+  );
 
-    await session.withTransaction(async () => {
-      const freshTx = await tx.constructor.findById(tx._id).session(session);
-      if (!freshTx || freshTx.artisanStatsCreditedAt) return;
-
-      const freshWallet = await wallet.constructor.findById(wallet._id).session(session);
-      if (!freshWallet) throw new Error('Wallet not found during payout stats update');
-
-      freshWallet.totalEarned = (freshWallet.totalEarned || 0) + payAmount;
-      freshWallet.totalJobs = (freshWallet.totalJobs || 0) + 1;
-      freshWallet.lastUpdated = new Date();
-      await freshWallet.save({ session });
-
-      freshTx.artisanStatsCreditedAt = new Date();
-      await freshTx.save({ session });
-
-      tx.artisanStatsCreditedAt = freshTx.artisanStatsCreditedAt;
-      wallet.totalEarned = freshWallet.totalEarned;
-      wallet.totalJobs = freshWallet.totalJobs;
-      wallet.lastUpdated = freshWallet.lastUpdated;
-      credited = true;
-    });
-
-    return credited;
-  } finally {
-    await session.endSession();
+  tx.artisanStatsCreditedAt = now;
+  if (updatedWallet) {
+    wallet.totalEarned = updatedWallet.totalEarned;
+    wallet.totalJobs = updatedWallet.totalJobs;
+    wallet.lastUpdated = updatedWallet.lastUpdated;
   }
+  return true;
 }
 
 export async function recordCustomerSpendStatsIfNeeded({ tx, wallet, amount }) {
   if (!tx || tx.customerStatsCreditedAt) return false;
-  const session = await mongoose.startSession();
+  const now = new Date();
+  const marker = await tx.constructor.updateOne(
+    { _id: tx._id, $or: [{ customerStatsCreditedAt: { $exists: false } }, { customerStatsCreditedAt: null }] },
+    { $set: { customerStatsCreditedAt: now } }
+  );
+  if (marker.modifiedCount <= 0) return false;
 
-  try {
-    let credited = false;
+  const updatedWallet = await wallet.constructor.findOneAndUpdate(
+    { _id: wallet._id },
+    { $inc: { totalSpent: amount, totalJobs: 1 }, $set: { lastUpdated: now } },
+    { new: true }
+  );
 
-    await session.withTransaction(async () => {
-      const freshTx = await tx.constructor.findById(tx._id).session(session);
-      if (!freshTx || freshTx.customerStatsCreditedAt) return;
-
-      const freshWallet = await wallet.constructor.findById(wallet._id).session(session);
-      if (!freshWallet) throw new Error('Wallet not found during customer spend stats update');
-
-      freshWallet.totalSpent = (freshWallet.totalSpent || 0) + amount;
-      freshWallet.totalJobs = (freshWallet.totalJobs || 0) + 1;
-      freshWallet.lastUpdated = new Date();
-      await freshWallet.save({ session });
-
-      freshTx.customerStatsCreditedAt = new Date();
-      await freshTx.save({ session });
-
-      tx.customerStatsCreditedAt = freshTx.customerStatsCreditedAt;
-      wallet.totalSpent = freshWallet.totalSpent;
-      wallet.totalJobs = freshWallet.totalJobs;
-      wallet.lastUpdated = freshWallet.lastUpdated;
-      credited = true;
-    });
-
-    return credited;
-  } finally {
-    await session.endSession();
+  tx.customerStatsCreditedAt = now;
+  if (updatedWallet) {
+    wallet.totalSpent = updatedWallet.totalSpent;
+    wallet.totalJobs = updatedWallet.totalJobs;
+    wallet.lastUpdated = updatedWallet.lastUpdated;
   }
+  return true;
 }
