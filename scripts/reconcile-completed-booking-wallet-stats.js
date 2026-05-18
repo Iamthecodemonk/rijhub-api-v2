@@ -47,7 +47,6 @@ async function reconcileBooking(booking) {
       companyFee: fee,
       transferAmount: payAmount,
       status: 'paid',
-      transferStatus: 'success',
       releasedAt: new Date(),
     });
   } else {

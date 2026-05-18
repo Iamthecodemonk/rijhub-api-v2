@@ -96,10 +96,22 @@ export async function ensurePaystackRecipient({ wallet, artisanDoc, request }) {
 
 export async function attemptPaystackTransfer({ tx, booking, payAmount, recipientCode, request }) {
   if (!process.env.PAYSTACK_SECRET_KEY || !recipientCode) {
+    request.log?.warn?.({
+      bookingId: booking?._id ? String(booking._id) : null,
+      transactionId: tx?._id ? String(tx._id) : null,
+      hasPaystackKey: !!process.env.PAYSTACK_SECRET_KEY,
+      hasRecipientCode: !!recipientCode,
+    }, 'paystack payout skipped: not configured');
     return { attempted: false, finalized: false, succeeded: false, reason: 'not_configured' };
   }
 
   if (tx.transferRef || tx.transferStatus === 'success') {
+    request.log?.info?.({
+      bookingId: booking?._id ? String(booking._id) : null,
+      transactionId: tx?._id ? String(tx._id) : null,
+      transferRef: tx.transferRef,
+      transferStatus: tx.transferStatus,
+    }, 'paystack payout skipped: already started');
     return { attempted: true, finalized: tx.transferStatus === 'success', succeeded: tx.transferStatus === 'success', reason: 'already_started' };
   }
 
@@ -119,6 +131,13 @@ export async function attemptPaystackTransfer({ tx, booking, payAmount, recipien
   }
 
   try {
+    request.log?.info?.({
+      bookingId: booking?._id ? String(booking._id) : null,
+      transactionId: tx?._id ? String(tx._id) : null,
+      amountKobo,
+      recipientCode,
+    }, 'paystack payout initiating');
+
     const tRes = await axios.post('https://api.paystack.co/transfer', {
       source: 'balance',
       amount: amountKobo,
@@ -129,6 +148,11 @@ export async function attemptPaystackTransfer({ tx, booking, payAmount, recipien
     if (tRes?.data?.status !== true) {
       tx.transferStatus = 'failed';
       await tx.save();
+      request.log?.warn?.({
+        bookingId: booking?._id ? String(booking._id) : null,
+        transactionId: tx?._id ? String(tx._id) : null,
+        response: tRes?.data,
+      }, 'paystack payout rejected');
       return { attempted: true, finalized: false, succeeded: false, reason: 'transfer_rejected' };
     }
 
@@ -138,6 +162,15 @@ export async function attemptPaystackTransfer({ tx, booking, payAmount, recipien
     tx.transferAmount = payAmount;
     tx.transferStatus = rawStatus;
     await tx.save();
+    request.log?.info?.({
+      bookingId: booking?._id ? String(booking._id) : null,
+      transactionId: tx?._id ? String(tx._id) : null,
+      transferRef: tx.transferRef,
+      transferStatus: tx.transferStatus,
+      transferAmount: tx.transferAmount,
+      paystackTransferId: transferData.id,
+      paystackResponse: transferData,
+    }, 'paystack payout initiated');
 
     return {
       attempted: true,

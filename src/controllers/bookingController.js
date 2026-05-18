@@ -122,7 +122,6 @@ async function ensureCompletedPaidBookingStats({ booking, request }) {
       companyFee: fee,
       transferAmount: payAmount,
       status: 'paid',
-      transferStatus: 'success',
       releasedAt: new Date(),
     });
     request.log?.warn?.({ bookingId: String(booking._id), transactionId: String(tx._id) }, 'created reconciliation transaction for completed paid booking');

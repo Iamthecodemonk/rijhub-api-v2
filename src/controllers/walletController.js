@@ -1,9 +1,98 @@
 import Wallet from '../models/Wallet.js';
+import Booking from '../models/Booking.js';
+import Transaction from '../models/Transaction.js';
+import { getConfig } from '../utils/config.js';
+
+async function getCompanyFee(amount, tx) {
+  if (tx?.companyFee !== undefined && tx?.companyFee !== null) return Number(tx.companyFee || 0);
+  let feePct = 0;
+  try {
+    const cfgVal = await getConfig('COMPANY_FEE_PCT');
+    if (cfgVal !== null && !isNaN(Number(cfgVal))) feePct = Number(cfgVal);
+  } catch {
+    feePct = 0;
+  }
+  return Math.round((amount * feePct) / 100 * 100) / 100;
+}
+
+async function ensureCompletedBookingWalletStats(userId, request) {
+  if (!userId) return;
+
+  const bookings = await Booking.find({
+    paymentStatus: 'paid',
+    status: 'completed',
+    $or: [{ artisanId: userId }, { customerId: userId }],
+  }).select('_id customerId artisanId price').lean();
+
+  for (const booking of bookings) {
+    const amount = Number(booking.price || 0);
+    if (amount <= 0 || !booking.customerId || !booking.artisanId) continue;
+
+    let tx = await Transaction.findOne({ bookingId: booking._id }).sort({ createdAt: -1 });
+    const fee = await getCompanyFee(amount, tx);
+    const payAmount = Math.round(Number(tx?.transferAmount || (amount - fee)) * 100) / 100;
+
+    if (!tx) {
+      tx = await Transaction.create({
+        bookingId: booking._id,
+        payerId: booking.customerId,
+        payeeId: booking.artisanId,
+        amount,
+        companyFee: fee,
+        transferAmount: payAmount,
+        status: 'paid',
+        releasedAt: new Date(),
+      });
+      request.log?.warn?.({ bookingId: String(booking._id), transactionId: String(tx._id) }, 'wallet reconciliation created missing transaction');
+    } else {
+      tx.payerId = tx.payerId || booking.customerId;
+      tx.payeeId = tx.payeeId || booking.artisanId;
+      tx.amount = Number(tx.amount || amount);
+      tx.companyFee = Number(tx.companyFee || fee);
+      tx.transferAmount = Number(tx.transferAmount || payAmount);
+      if (tx.status === 'pending') tx.status = 'paid';
+      await tx.save();
+    }
+
+    if (String(booking.artisanId) === String(userId)) {
+      const marker = await Transaction.updateOne(
+        { _id: tx._id, $or: [{ artisanStatsCreditedAt: { $exists: false } }, { artisanStatsCreditedAt: null }] },
+        { $set: { artisanStatsCreditedAt: new Date() } }
+      );
+      if (marker.modifiedCount > 0) {
+        await Wallet.updateOne(
+          { userId: booking.artisanId },
+          { $setOnInsert: { userId: booking.artisanId }, $inc: { totalEarned: payAmount, totalJobs: 1 }, $set: { lastUpdated: new Date() } },
+          { upsert: true }
+        );
+      }
+    }
+
+    if (String(booking.customerId) === String(userId)) {
+      const marker = await Transaction.updateOne(
+        { _id: tx._id, $or: [{ customerStatsCreditedAt: { $exists: false } }, { customerStatsCreditedAt: null }] },
+        { $set: { customerStatsCreditedAt: new Date() } }
+      );
+      if (marker.modifiedCount > 0) {
+        await Wallet.updateOne(
+          { userId: booking.customerId },
+          { $setOnInsert: { userId: booking.customerId }, $inc: { totalSpent: amount, totalJobs: 1 }, $set: { lastUpdated: new Date() } },
+          { upsert: true }
+        );
+      }
+    }
+  }
+}
 
 export async function getWallet(request, reply) {
   try {
     const userId = request.user?.id || request.query.userId;
     if (!userId) return reply.code(400).send({ success: false, message: 'userId required' });
+    try {
+      await ensureCompletedBookingWalletStats(userId, request);
+    } catch (e) {
+      request.log?.warn?.('wallet stat reconciliation failed', e?.message || e);
+    }
     let wallet = await Wallet.findOne({ userId });
     if (!wallet) {
       wallet = await Wallet.create({ userId });
